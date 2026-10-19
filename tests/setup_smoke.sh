@@ -18,7 +18,7 @@ project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 test_root=$(mktemp -d /tmp/fullish-setup-test.XXXXXXXX)
 mkdir -p "$test_root/source/scripts" "$test_root/source/deploy" "$test_root/bin"
 cp "$project_root/scripts/server-setup.sh" "$project_root/scripts/deploy.sh" \
-    "$project_root/scripts/rollback.sh" "$test_root/source/scripts/"
+    "$project_root/scripts/rollback.sh" "$project_root/scripts/runtime_config.py" "$test_root/source/scripts/"
 cp "$project_root/deploy/compose.yaml" "$project_root/deploy/runtime.env.example" \
     "$test_root/source/deploy/"
 export SETUP_TEST_ROOT="$test_root"
@@ -68,6 +68,7 @@ expect_failure() { (( setup_status != 0 )) || die 'Setup unexpectedly succeeded.
 snapshot() {
     sha256sum /opt/fullish/compose.yaml /opt/fullish/bin/deploy.sh \
         /opt/fullish/bin/rollback.sh /opt/fullish/image-repository \
+        /opt/fullish/bin/runtime_config.py \
         /opt/fullish/runtime.env /opt/fullish/state/release.env > "$1"
 }
 expect_preserved() {

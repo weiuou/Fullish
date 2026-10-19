@@ -39,7 +39,7 @@ finish() {
         install -m 644 "$backup/compose.yaml" "$root/compose.yaml"
         cp -a -- "$backup/bin/." "$root/bin/"
     fi
-    rm -f -- "$staging/compose.yaml" "$staging/deploy.sh" "$staging/rollback.sh" "$staging/runtime.env"
+    rm -f -- "$staging/compose.yaml" "$staging/deploy.sh" "$staging/rollback.sh" "$staging/runtime.env" "$staging/runtime_config.py"
     rmdir -- "$staging"
     exit "$result"
 }
@@ -49,6 +49,7 @@ trap 'exit 143' TERM
 install -m 644 "$source_root/deploy/compose.yaml" "$staging/compose.yaml"
 install -m 755 "$source_root/scripts/deploy.sh" "$staging/deploy.sh"
 install -m 755 "$source_root/scripts/rollback.sh" "$staging/rollback.sh"
+install -m 644 "$source_root/scripts/runtime_config.py" "$staging/runtime_config.py"
 if [[ -f $root/runtime.env ]]; then
     install -m 600 "$root/runtime.env" "$staging/runtime.env"
 else
@@ -68,6 +69,7 @@ applying=1
 install -m 644 "$staging/compose.yaml" "$root/compose.yaml"
 install -m 755 "$staging/deploy.sh" "$root/bin/deploy.sh"
 install -m 755 "$staging/rollback.sh" "$root/bin/rollback.sh"
+install -m 644 "$staging/runtime_config.py" "$root/bin/runtime_config.py"
 if [[ ! -f $root/runtime.env ]]; then
     install -m 600 "$staging/runtime.env" "$root/runtime.env"
 fi
