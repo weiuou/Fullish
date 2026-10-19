@@ -47,7 +47,7 @@ jobs:
           persist-credentials: false
       - name: Check documentation
         run: python3 scripts/check_docs.py
-      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         if: needs.changes.outputs.runtime == 'true'
         with:
           version: "0.13.1"
@@ -198,7 +198,7 @@ jobs:
             git fetch --quiet --no-tags origin "$head"
           fi
           python3 scripts/classify_changes.py --deployment-current "$GITHUB_SHA" "$head"
-      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         if: steps.current.outputs.apply == 'true' && vars.DEPLOY_TRANSPORT == 'tat'
         with:
           version: "0.13.1"
