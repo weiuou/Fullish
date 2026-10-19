@@ -1,0 +1,25 @@
+name: fullish
+
+services:
+  bot:
+    image: ${FULLISH_IMAGE:?Set FULLISH_IMAGE to a repository@sha256 digest}
+    init: true
+    restart: unless-stopped
+    env_file:
+      - path: ./runtime.env
+        format: raw
+    ports:
+      - "127.0.0.1:18080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

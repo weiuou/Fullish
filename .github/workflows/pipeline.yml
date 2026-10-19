@@ -1,0 +1,185 @@
+name: CI and delivery
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A running production deployment must finish. Superseded PR checks may stop.
+concurrency:
+  group: fullish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Quality and deployment tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.11.3"
+          enable-cache: true
+      - run: uv sync --locked --group deploy
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked --group deploy pyright
+      - run: uv run --locked --group deploy pytest
+      - name: Check deployment scripts
+        run: |
+          for script in scripts/*.sh deploy/*.sh tests/*.sh; do bash -n "$script"; done
+          bash tests/deploy_smoke.sh
+
+  container:
+    name: Build and verify container
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build once
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          push: false
+          platforms: ${{ vars.DEPLOY_PLATFORM || 'linux/amd64' }}
+          tags: fullish:ci
+          build-args: APP_REVISION=${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify server initialization in an isolated container
+        run: |
+          docker run --rm --user 0 --network none \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --env FULLISH_SETUP_TEST_CONTAINER=1 \
+            --entrypoint bash fullish:ci /workspace/tests/setup_smoke.sh
+      - name: Verify the built image
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: bash scripts/container-smoke.sh fullish:ci "$EXPECTED_REVISION"
+      - name: Export the verified image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: docker save --output fullish-image.tar fullish:ci
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          name: verified-image
+          path: fullish-image.tar
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish verified image
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-image
+      - name: Resolve repository
+        id: registry
+        env:
+          CUSTOM_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+        shell: bash
+        run: |
+          repository="${CUSTOM_REPOSITORY:-ghcr.io/${GITHUB_REPOSITORY,,}}"
+          if [[ ! $repository =~ ^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9][a-z0-9._-]*)+$ ]]; then
+            echo 'IMAGE_REPOSITORY must be a lowercase registry/repository without tag or digest.' >&2
+            exit 1
+          fi
+          printf 'repository=%s\nregistry=%s\n' "$repository" "${repository%%/*}" >> "$GITHUB_OUTPUT"
+      - name: Login to GHCR
+        if: vars.IMAGE_REPOSITORY == ''
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to custom registry
+        if: vars.IMAGE_REPOSITORY != ''
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ steps.registry.outputs.registry }}
+          username: ${{ vars.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Push the same image that passed the smoke test
+        id: push
+        env:
+          IMAGE_REPOSITORY: ${{ steps.registry.outputs.repository }}
+        shell: bash
+        run: |
+          docker load --input fullish-image.tar
+          tag="$IMAGE_REPOSITORY:sha-$GITHUB_SHA"
+          docker tag fullish:ci "$tag"
+          docker push "$tag"
+          image=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$tag" | awk -v prefix="$IMAGE_REPOSITORY@sha256:" 'index($0, prefix)==1 { print; exit }')
+          [[ $image =~ @sha256:[a-f0-9]{64}$ ]] || { echo 'Registry digest missing.' >&2; exit 1; }
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+          printf 'Published verified image: `%s`\n' "$image" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to Tencent Cloud
+    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: fullish-production
+      cancel-in-progress: false
+    steps:
+      - name: Skip a superseded main commit
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ $head == "$GITHUB_SHA" ]]; then
+            echo 'apply=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'apply=false' >> "$GITHUB_OUTPUT"
+            echo 'A newer main commit exists; this image will not be deployed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: steps.current.outputs.apply == 'true'
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        if: steps.current.outputs.apply == 'true'
+        with:
+          version: "0.11.3"
+          enable-cache: false
+      - name: Install locked deployment dependencies
+        if: steps.current.outputs.apply == 'true'
+        run: uv sync --locked --no-dev --group deploy
+      - name: Invoke saved command and wait for its result
+        if: steps.current.outputs.apply == 'true'
+        env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          TENCENTCLOUD_REGION: ${{ vars.TENCENTCLOUD_REGION }}
+          TAT_COMMAND_ID: ${{ vars.TAT_COMMAND_ID }}
+          TAT_INSTANCE_ID: ${{ vars.TAT_INSTANCE_ID }}
+          TAT_WAIT_TIMEOUT: "960"
+          FULLISH_IMAGE: ${{ needs.publish.outputs.image }}
+        run: uv run --locked --no-dev --group deploy python scripts/tat_deploy.py

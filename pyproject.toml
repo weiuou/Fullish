@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fullish"
+version = "0.1.0"
+description = "An open-source QQ group companion: deployment foundation"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "nonebot2[fastapi]>=2.4.4,<3",
+]
+
+[project.scripts]
+fullish = "fullish.__main__:main"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1,<1",
+    "pyright>=1.1.407,<2",
+    "pytest>=8.4,<10",
+    "pyyaml>=6.0.3,<7",
+    "ruff>=0.14,<1",
+]
+deploy = [
+    "tencentcloud-sdk-python-tat>=3.0,<4",
+]
+
+[tool.uv]
+required-version = "==0.11.3"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fullish"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "basic"
+include = ["src", "tests", "scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
