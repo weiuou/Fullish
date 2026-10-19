@@ -20,8 +20,8 @@
 
 ## 依赖自动更新
 
-Dependabot 每周检查 GitHub Actions、Python 依赖和 Docker 基础镜像，更新先作为 PR 执行检查，由维护者审查后合并。
+Dependabot 自动版本更新 PR 已关闭，仓库不再保留其自动更新配置。GitHub Actions、Python 依赖和 Docker 基础镜像由维护者按需升级，手动提交 PR，经审查和 CI 验证后合并。正常的 CI、镜像发布与部署流程继续运行。
 
-Python 镜像的自动版本更新保持在当前支持的 3.13 系列，继续接收补丁和镜像 digest 更新；3.14 及以上版本暂不自动升级。迁移 Python 系列时，需要在独立 PR 中同步 `pyproject.toml` 的版本约束、`.python-version`、Dockerfile 和工具的 Python 目标版本，并重新验证依赖与容器。
+当前支持 Python 3.13 系列，补丁和镜像 digest 更新也需手动提交 PR。迁移 Python 系列时，需要在独立 PR 中同步 `pyproject.toml` 的版本约束、`.python-version`、Dockerfile 和工具的 Python 目标版本，并重新验证依赖与容器。
 
 uv 的版本固定在 Dockerfile、`pyproject.toml` 的 `tool.uv.required-version` 和工作流中的 `setup-uv` 配置里。升级 uv 时须同步这些位置，并用新版本检查锁文件和构建；只修改 Docker 镜像版本的 PR 会被版本约束拒绝，不应绕过检查合并。
