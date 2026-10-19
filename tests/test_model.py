@@ -67,13 +67,19 @@ def test_images_are_fetched_without_the_model_credential() -> None:
             ModelSettings("http://localhost/v1", "test-secret"),
             transport=httpx.MockTransport(respond),
         )
+        await model.media.aclose()
         model.media = httpx.AsyncClient(transport=httpx.MockTransport(media))
         try:
             assert (
                 await model.reply(
-                    [{"role": "user", "content": "群成员 alice: [图片]"}],
+                    [
+                        {
+                            "role": "user",
+                            "content": "群成员 alice: [图片]",
+                            "images": ["https://cdn.example/1.png"],
+                        }
+                    ],
                     addressed=True,
-                    images=["https://cdn.example/1.png"],
                 )
                 == "看到了"
             )
@@ -90,6 +96,8 @@ def test_images_are_fetched_without_the_model_credential() -> None:
     [
         ("https://cdn.example/big.jpg", "oversize"),
         ("https://cdn.example/bad.jpg", "html"),
+        ("https://cdn.example/mislabeled.png", "html_image_header"),
+        ("https://[invalid", "png"),
         ("file:///etc/passwd", "png"),
         ("https://cdn.example/none.jpg", "empty"),
     ],
@@ -99,16 +107,18 @@ def test_unusable_images_are_skipped(url: str, kind: str) -> None:
     body = {
         "oversize": b"\xff\xd8\xff" + b"0" * (2 * 1024 * 1024),
         "html": b"<html>denied</html>",
+        "html_image_header": b"<html>expired</html>",
         "png": PNG,
         "empty": b"",
     }[kind]
-    headers = {"content-type": "image/png"} if kind == "empty" else {}
+    headers = {"content-type": "image/png"} if kind in {"empty", "html_image_header"} else {}
 
     async def run() -> None:
         model = ChatModel(
             ModelSettings("http://localhost/v1", "secret"),
             transport=httpx.MockTransport(lambda _: httpx.Response(500)),
         )
+        await model.media.aclose()
         model.media = httpx.AsyncClient(
             transport=httpx.MockTransport(
                 lambda _: httpx.Response(200, content=body, headers=headers)

@@ -2,7 +2,7 @@
 
 import asyncio
 import base64
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from urllib.parse import urlsplit
 
 import httpx
@@ -17,7 +17,7 @@ PERSONA = """你是 Fullish，QQ 群里的 AI 伙伴。用自然、简短的中�
 最后一条消息标注是否在叫你：被叫到时正常回应；否则只有值得接话才说话，
 没有合适的话只输出 <SILENCE>。不要输出思考过程。
 群友会发图片，最近几分钟的图片会直接附在对应消息上，你可以看图并结合聊天回应；
-标成 [图片] 但没有附带图片的是较早的图，不要猜测里面的内容。"""
+标成 [图片] 但没有附带图片的只是占位，不要猜测里面的内容。"""
 
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -26,6 +26,7 @@ IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 class Turn(TypedDict):
     role: str
     content: str
+    images: NotRequired[list[str]]
 
 
 class ModelError(RuntimeError):
@@ -67,10 +68,10 @@ class ChatModel:
 
     async def download(self, url: str) -> str | None:
         """Return a data URL for a bounded image fetch, or None when unusable."""
-        parsed = urlsplit(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            return None
         try:
+            parsed = urlsplit(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                return None
             async with asyncio.timeout(15):
                 async with self.media.stream("GET", url) as response:
                     response.raise_for_status()
@@ -81,23 +82,20 @@ class ChatModel:
                         if size > MAX_IMAGE_BYTES:
                             return None
                         chunks.append(chunk)
-                    media_type = response.headers.get("content-type", "").split(";")[0].strip()
         except (httpx.HTTPError, TimeoutError, ValueError):
             return None
         body = b"".join(chunks)
-        media_type = sniff_image_type(body) or media_type
+        media_type = sniff_image_type(body)
         if media_type not in IMAGE_TYPES or not body:
             return None
         encoded = base64.b64encode(body).decode("ascii")
         return f"data:{media_type};base64,{encoded}"
 
-    async def reply(
-        self, turns: list[Turn], *, addressed: bool, images: list[str] | None = None
-    ) -> str | None:
-        # The outer deadline also bounds slow responses that never stop sending bytes.
+    async def reply(self, turns: list[Turn], *, addressed: bool) -> str | None:
+        # One deadline covers media downloads and the model request together.
         try:
-            payload = await self._messages(turns, addressed, images or [])
             async with asyncio.timeout(self.settings.timeout):
+                payload = await self._messages(turns, addressed)
                 response = await self.client.post(
                     "chat/completions",
                     json={
@@ -120,20 +118,15 @@ class ChatModel:
         except (ValueError, KeyError, IndexError, TypeError):
             raise ModelError("invalid_response") from None
 
-    async def _messages(
-        self, turns: list[Turn], addressed: bool, images: list[str]
-    ) -> list[dict[str, object]]:
+    async def _messages(self, turns: list[Turn], addressed: bool) -> list[dict[str, object]]:
         messages: list[dict[str, object]] = [{"role": "system", "content": PERSONA}]
-        available: list[str] = []
-        for url in images:
-            if data := await self.download(url):
-                available.append(data)
-        last_user = next(
-            (index for index in range(len(turns) - 1, -1, -1) if turns[index]["role"] == "user"),
-            None,
-        )
-        for index, item in enumerate(turns):
-            if index == last_user and available:
+        for item in turns:
+            available: list[str] = []
+            if item["role"] == "user":
+                for url in item.get("images", []):
+                    if data := await self.download(url):
+                        available.append(data)
+            if available:
                 messages.append(
                     {
                         "role": "user",

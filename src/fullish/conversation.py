@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TypedDict
 
 from fullish.model import ChatModel
+from fullish.model import Turn as ModelTurn
 
 HISTORY_MESSAGES = 60
 HISTORY_CHARS = 6000
@@ -94,17 +95,19 @@ class Conversations:
             try:
                 # Only recent pictures are worth re-downloading; older ones stay as
                 # [图片] placeholders so context keeps its shape without extra cost.
-                recent = [
-                    url
-                    for item in group.turns
-                    if now - item["created"] <= IMAGE_WINDOW_SECONDS
-                    for url in item["images"]
-                ][-MAX_IMAGES:]
-                return await self.model.reply(
-                    [{"role": item["role"], "content": item["content"]} for item in group.turns],
-                    addressed=called,
-                    images=recent,
-                )
+                history: list[ModelTurn] = []
+                remaining = MAX_IMAGES
+                for item in reversed(group.turns):
+                    recent = (
+                        item["images"][-remaining:]
+                        if remaining and now - item["created"] <= IMAGE_WINDOW_SECONDS
+                        else []
+                    )
+                    remaining -= len(recent)
+                    history.append(
+                        {"role": item["role"], "content": item["content"], "images": recent}
+                    )
+                return await self.model.reply(history[::-1], addressed=called)
             finally:
                 self.active -= 1
 
