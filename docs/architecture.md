@@ -2,7 +2,7 @@
 
 ## 当前边界
 
-当前使用 NoneBot2 + FastAPI，通过 HTTPX 调用 CPA，通过 QQ 官方适配器维持向外的 WebSocket 连接。支持按群隔离的短期文本上下文、私聊过滤和 @ / 名称触发回复；尚未持久化聊天或长期记忆。不配置凭证时仍可运行部署骨架，健康响应为 `mode=foundation`。
+当前使用 NoneBot2 + FastAPI，通过 HTTPX 调用 CPA，通过 QQ 官方适配器维持向外的 WebSocket 连接。支持按群隔离的短期上下文（文本、表情和图片占位）、私聊过滤和 @ / 名称触发回复，触发时可把最近几分钟的图片作为多模态输入传给模型；尚未持久化聊天或长期记忆。不配置凭证时仍可运行部署骨架，健康响应为 `mode=foundation`。
 
 readiness 验证进程启动；独立 `/health/dependencies` 检查模型目录和 QQ 连接，避免外部平台短暂故障导致应用反复回滚。同机 CPA 通过 Unix socket 转发连接，继续只监听宿主机回环端口。配置和实际聊天策略见 [接入指南](qq-setup.md)。
 

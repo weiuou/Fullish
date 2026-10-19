@@ -1,7 +1,7 @@
 """QQ official WebSocket transport. Private events stop before message dispatch."""
 
 from nonebot import logger, on_message
-from nonebot.adapters.qq import Adapter, Bot
+from nonebot.adapters.qq import Adapter, Bot, Message
 from nonebot.adapters.qq.event import GroupMessageCreateEvent
 from nonebot.adapters.qq.models import Dispatch
 
@@ -16,6 +16,25 @@ class GroupOnlyAdapter(Adapter):
         super().dispatch_event(bot, payload)
 
 
+def describe(message: Message) -> tuple[str, list[str]]:
+    """Flatten a message into context text plus the image URLs it carries."""
+    parts: list[str] = []
+    images: list[str] = []
+    for segment in message:
+        if segment.type == "text":
+            parts.append(segment.data["text"])
+        elif segment.type == "emoji":
+            parts.append("[表情]")
+        elif segment.type == "mention_user":
+            name = segment.data.get("username")
+            parts.append(f"@{name}" if name else "@某人")
+        elif segment.type == "image":
+            parts.append("[图片]")
+            if url := segment.data.get("url"):
+                images.append(url)
+    return "".join(parts).strip(), images
+
+
 def install_group_handler(conversations: Conversations) -> None:
     async def is_group(event: GroupMessageCreateEvent) -> bool:
         return True
@@ -25,16 +44,18 @@ def install_group_handler(conversations: Conversations) -> None:
     @matcher.handle()
     async def handle(bot: Bot, event: GroupMessageCreateEvent) -> None:
         try:
-            text = await conversations.receive(
+            text, images = describe(event.get_message())
+            reply = await conversations.receive(
                 event.group_openid,
                 event.id,
                 event.author.member_openid,
-                event.get_plaintext(),
+                text,
                 addressed=event.is_tome(),
+                images=images,
             )
-            if text:
-                await bot.send(event, text)
-                conversations.sent(event.group_openid, text)
+            if reply:
+                await bot.send(event, reply)
+                conversations.sent(event.group_openid, reply)
         except ModelError as error:
             logger.warning("AI request failed: {}", str(error))
         except Exception as error:
