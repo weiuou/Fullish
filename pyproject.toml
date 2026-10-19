@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "An open-source QQ group companion: deployment foundation"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    "nonebot2[fastapi]>=2.4.4,<3",
+    "httpx>=0.28.1,<1",
+    "nonebot-adapter-qq>=1.7.3,<2",
+    "nonebot2[fastapi,httpx,websockets]>=2.4.4,<3",
 ]
 
 [project.scripts]

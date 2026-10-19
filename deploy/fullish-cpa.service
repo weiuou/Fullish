@@ -1,0 +1,13 @@
+[Unit]
+Description=Forward Fullish's local Unix socket to CPA loopback
+After=network.target cliproxyapi.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8317
+DynamicUser=true
+User=fullish-cpa
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

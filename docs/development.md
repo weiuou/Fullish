@@ -15,7 +15,9 @@ uv run python -m fullish
 | `http://127.0.0.1:8080/health/ready` | 基础服务已完成启动 |
 | `http://127.0.0.1:8080/version` | 应用版本、构建提交和运行模式 |
 
-当前响应的 `mode=foundation`、`qq_connected=false` 表示运行的是部署骨架。QQ、模型和存储接入后，再扩展 readiness 的判断条件。
+不配置凭证时运行 `mode=foundation`。配置 AI 后为 `ai_configured`，启用 QQ 后为 `qq`；`qq_connected` 表示实际连接状态。`/health/ready` 仅用于进程启动验收；`/health/dependencies` 查询 CPA 模型目录及 QQ 状态，不发起生成。
+
+CPA、QQ 凭证、测试群和聊天策略见 [接入指南](qq-setup.md)。
 
 通过 `HOST`、`PORT`、`LOG_LEVEL` 调整本地运行配置。服务器的回环端口映射为 18080，详见 [部署指南](deployment-ssh.md)。
 
