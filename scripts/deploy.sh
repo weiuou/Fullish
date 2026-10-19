@@ -38,9 +38,15 @@ compose=(docker compose --project-name fullish --file "$root/compose.yaml")
 "${compose[@]}" config --quiet
 
 apply_started=0
+runtime_backup=''
 on_exit() {
     local result=$?
     trap - EXIT INT TERM
+    if (( result != 0 )) && [[ -n $runtime_backup ]]; then
+        mv -f -- "$runtime_backup" "$root/runtime.env"
+        runtime_backup=''
+        printf 'Previous runtime configuration restored.\n' >&2
+    fi
     if (( result != 0 && apply_started == 1 )); then
         printf 'Deployment failed; restoring the last successful image.\n' >&2
         if [[ -n $current ]]; then
@@ -58,6 +64,7 @@ on_exit() {
         fi
     fi
     rm -f -- "$root/state/release.env.tmp.$$"
+    [[ -z $runtime_backup ]] || rm -f -- "$runtime_backup"
     exit "$result"
 }
 trap on_exit EXIT
@@ -77,6 +84,12 @@ container=$("${compose[@]}" ps --quiet bot)
 if [[ -z $current && -n $container ]]; then
     die 'A container exists without release state. Inspect and recover state before deploying.'
 fi
+if [[ -n ${FULLISH_QQ_CONFIG_FILE:-} ]]; then
+    runtime_backup=$(mktemp "$root/state/runtime-backup.XXXXXXXX")
+    cp -p -- "$root/runtime.env" "$runtime_backup"
+    helper=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime_config.py
+    python3 "$helper" update "$root/runtime.env" < "$FULLISH_QQ_CONFIG_FILE"
+fi
 apply_started=1
 # Single active sender: stop old application before starting its replacement.
 timeout 45 "${compose[@]}" stop --timeout 30 bot
@@ -93,6 +106,8 @@ trap '' INT TERM
 printf 'CURRENT_IMAGE=%s\nPREVIOUS_IMAGE=%s\n' "$target" "$previous" > "$root/state/release.env.tmp.$$"
 mv -f -- "$root/state/release.env.tmp.$$" "$state"
 apply_started=0
+[[ -z $runtime_backup ]] || rm -f -- "$runtime_backup"
+runtime_backup=''
 trap 'exit 130' INT
 trap 'exit 143' TERM
 printf 'Deployment healthy: %s\n' "$target"

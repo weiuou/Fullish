@@ -227,4 +227,6 @@ jobs:
           FULLISH_IMAGE: ${{ needs.publish.outputs.image }}
           REGISTRY_PULL_USERNAME: ${{ vars.REGISTRY_PULL_USERNAME || github.actor }}
           REGISTRY_PULL_PASSWORD: ${{ secrets.REGISTRY_PULL_PASSWORD || github.token }}
+          QQ_APP_ID: ${{ secrets.QQ_APP_ID }}
+          QQ_APP_SECRET: ${{ secrets.QQ_APP_SECRET }}
         run: python3 scripts/ssh_deploy.py

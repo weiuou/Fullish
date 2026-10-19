@@ -23,7 +23,8 @@ GitHub 托管运行器处理代码检查、测试和镜像构建，镜像存入 
 | GHCR 拉取凭证 | 每次工作流的短期 token，经 SSH stdin 传递，服务器 `/run` 临时保存 |
 | TAT 命令 ID、实例 ID、地域 | GitHub `production` 环境变量 |
 | 调用 TAT 的专用 CAM 凭证 | GitHub `production` 环境 Secrets |
-| QQ / 模型等应用密钥 | 服务器 `/opt/fullish/runtime.env`，在接入时添加 |
+| QQ 应用密钥 | GitHub `production` Secrets，SSH 部署时同步至服务器 `runtime.env` |
+| CPA 模型密钥 | 服务器 `/opt/fullish/runtime.env`，不经 GitHub 传递 |
 | 已部署与上一个成功镜像 | 服务器部署状态文件 |
 
 生产服务器不运行可执行外部 PR 的 GitHub runner。SSH 使用仅允许指定仓库部署操作的专用身份和固定主机公钥；TAT 则调用保存的命令，不需要为 GitHub Actions 放开服务器 SSH 入站。两种部署凭证均存入受保护的 GitHub `production` 环境。
