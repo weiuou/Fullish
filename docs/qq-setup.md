@@ -1,0 +1,75 @@
+# QQ 官方机器人与 CPA
+
+官方机器人使用 AppID / AppSecret 换取短期令牌，适配器负责刷新、WebSocket 心跳和断线重连，不需要登录个人 QQ 客户端。平台停服、权限变更或凭证失效仍可能导致离线，不能保证永久在线。
+
+## 先创建测试机器人
+
+1. 打开 [QQ 开放平台](https://q.qq.com/)，按平台要求完成开发者注册并创建机器人。
+2. 在“开发管理”取得 AppID 和 AppSecret。如果要求 IP 白名单，填写实际服务器出口 IP；当前服务器为 `43.133.14.74`。
+3. 在使用范围 / 测试配置中添加测试人员和测试群，按控制台提示将机器人加入群聊。是否需要审核以上线，以账号控制台为准。
+4. 申请群消息能力。要像群友一样读取普通发言，需要平台开放 `GROUP_MESSAGE_CREATE`，并由群主在群内授权机器人获取全部消息。能力以控制台和实际收到的事件为准；没有该权限时先测试 @ 消息，不能据此宣称已接收全群消息。
+
+参考：[官方鉴权说明](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/api-use.html)、[腾讯 SDK 使用说明](https://github.com/tencent-connect/qqbot-nodejs/blob/main/USAGE.md)、[NoneBot QQ 适配器](https://github.com/nonebot/adapter-qq)。
+
+## 配置到服务器
+
+编辑服务器 `/opt/fullish/runtime.env`，保留已有 AI 配置，添加：
+
+```dotenv
+QQ_ENABLED=true
+QQ_APP_ID=你的AppID
+QQ_APP_SECRET=你的AppSecret
+# 可选：逗号分隔的群 OpenID，空值允许机器人已加入的群。
+QQ_ALLOWED_GROUPS=
+```
+
+群 OpenID 由官方事件提供，不是普通 QQ 群号。AppSecret 只写服务器配置，不发送到公开聊天、GitHub 或工作流日志。权限保持 `0600`。使用 `sudoedit /opt/fullish/runtime.env` 后，在服务器执行：
+
+```sh
+sudo bash -c 'set -a; . /opt/fullish/state/release.env; set +a; FULLISH_IMAGE="$CURRENT_IMAGE" docker compose -f /opt/fullish/compose.yaml up -d --wait'
+curl -fsS http://127.0.0.1:18080/health/dependencies
+```
+
+这一步重新创建当前镜像的容器以读取新环境变量，不需要重新构建或发布 Package。当前采用向外建立 WebSocket 的方式，无需开放新的公网端口或配置 Webhook。
+
+验收：`qq_connected=true`，群内 @ 或提到 `Fullish` 能收到 Gemini 回复，私聊无回复；再确认普通群消息事件已到达。私聊在事件分发前丢弃，不参与上下文或模型调用。QQ 的群消息订阅位同时包含 C2C 事件，应用仍会过滤私聊。
+
+## CPA 模型配置
+
+```dotenv
+AI_BASE_URL=http://localhost/v1
+AI_API_KEY=服务器上的CPA客户端密钥
+AI_MODEL=gemini-3.8-flash-high
+AI_UNIX_SOCKET=/run/fullish-cpa/api.sock
+```
+
+模型名来自当前 CPA 的 `/v1/models`。该部署使用 CPA 提供的 `gemini-3.8-flash-high`，没有自动回退到其他模型。若 CPA 更换提供商或名称，需重新核对列表。
+
+同机 CPA 只监听宿主机 `127.0.0.1:8317`，容器自己的 `127.0.0.1` 无法访问它。这里用 systemd 的 Unix socket 转发，通过只读目录挂载提供给 HTTPX；保持 CPA 的监听范围，无需公网绕行。
+
+已有 Docker 部署上安装这项配套设施：
+
+```sh
+sudo install -d -m 755 /opt/fullish/cpa
+sudo install -m 644 deploy/fullish-cpa.socket deploy/fullish-cpa.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fullish-cpa.socket
+# 按 SSH 部署指南更新 Compose；CI 只更新应用镜像，不安装这些主机文件。
+sudo bash scripts/server-setup.sh ghcr.io/weiuou/fullish
+```
+
+这些单元适用于具有 `/usr/lib/systemd/systemd-socket-proxyd` 的 Ubuntu / Debian，转发进程使用 systemd 临时用户。socket 在容器内为 `/run/fullish-cpa/api.sock`，CPA 仍校验 Bearer 密钥。远程模型服务改用 HTTPS 的 `AI_BASE_URL` 并移除 `AI_UNIX_SOCKET` 即可。
+
+使用一次真实生成验证模型（会消耗少量额度）：
+
+```sh
+sudo docker exec fullish-bot-1 python -m fullish.check_model
+```
+
+`/health/dependencies` 只查询模型目录和 QQ 连接状态，不生成文本。Docker readiness 只检查进程已启动，避免 QQ / 模型短暂故障触发错误回滚。`ai_configured` 表示 AI 配置已加载；是否真正可用仍需查看依赖检查和实际生成结果。
+
+## 当前聊天策略
+
+每群保留最近 20 条文本，上下文空闲 15 分钟后在下一次消息处理时清理；最多 50 个群，部署或重启会清空。普通群消息用于上下文，@ 或提到 Fullish 才触发生成；暂不随机插话。每群最多一个生成请求，全局最多四个，每群两次调用至少相隔五秒。忙碌期间的新消息保留为后续上下文，但不排队生成。
+
+回复默认为一到三句，避免客服套话，保留选择沉默的能力；只处理文本。长期记忆、主动插话评测和过时话题判断仍是后续工作。

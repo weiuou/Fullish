@@ -10,6 +10,8 @@ services:
         format: raw
     ports:
       - "127.0.0.1:18080:8080"
+    volumes:
+      - ./cpa:/run/fullish-cpa:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
