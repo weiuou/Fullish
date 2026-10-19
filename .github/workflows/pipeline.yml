@@ -15,37 +15,63 @@ on:
 permissions:
   contents: read
 
-# A running production deployment must finish. Superseded PR checks may stop.
+# Docs pushes must not replace queued code runs. Only obsolete PR runs may stop.
 concurrency:
-  group: fullish-${{ github.workflow }}-${{ github.ref }}
+  group: fullish-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.classify.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Choose documentation or full CI
+        id: classify
+        run: python3 scripts/classify_changes.py
+
   checks:
     name: Quality and deployment tests
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Check documentation
+        run: python3 scripts/check_docs.py
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        if: needs.changes.outputs.runtime == 'true'
         with:
           version: "0.11.3"
           enable-cache: true
       - run: uv sync --locked --group deploy
+        if: needs.changes.outputs.runtime == 'true'
       - run: uv run --locked ruff check .
+        if: needs.changes.outputs.runtime == 'true'
       - run: uv run --locked ruff format --check .
+        if: needs.changes.outputs.runtime == 'true'
       - run: uv run --locked --group deploy pyright
+        if: needs.changes.outputs.runtime == 'true'
       - run: uv run --locked --group deploy pytest
+        if: needs.changes.outputs.runtime == 'true'
       - name: Check deployment scripts
+        if: needs.changes.outputs.runtime == 'true'
         run: |
           for script in scripts/*.sh deploy/*.sh tests/*.sh; do bash -n "$script"; done
           bash tests/deploy_smoke.sh
 
   container:
     name: Build and verify container
-    needs: checks
+    needs: [changes, checks]
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -89,8 +115,8 @@ jobs:
 
   publish:
     name: Publish verified image
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: container
+    if: needs.changes.outputs.runtime == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [changes, container]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -157,22 +183,21 @@ jobs:
       group: fullish-production
       cancel-in-progress: false
     steps:
-      - name: Skip a superseded main commit
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Skip superseded code, allow newer documentation
         id: current
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
-          if [[ $head == "$GITHUB_SHA" ]]; then
-            echo 'apply=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'apply=false' >> "$GITHUB_OUTPUT"
-            echo 'A newer main commit exists; this image will not be deployed.' >> "$GITHUB_STEP_SUMMARY"
+          if [[ $head != "$GITHUB_SHA" ]]; then
+            gh auth setup-git
+            git fetch --quiet --no-tags origin "$head"
           fi
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        if: steps.current.outputs.apply == 'true'
-        with:
-          persist-credentials: false
+          python3 scripts/classify_changes.py --deployment-current "$GITHUB_SHA" "$head"
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         if: steps.current.outputs.apply == 'true' && vars.DEPLOY_TRANSPORT == 'tat'
         with:
