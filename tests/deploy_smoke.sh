@@ -298,4 +298,48 @@ assert_running "$image_b"
 assert_restarted
 pass
 
+new_case qq_config_sync
+seed_release "$image_b" "$image_a"
+printf 'AI_API_KEY=preserve-this\nQQ_ENABLED=false\n' > "$FULLISH_ROOT/runtime.env"
+printf '{"QQ_APP_ID":"1234","QQ_APP_SECRET":"test-secret"}\n' > "$FULLISH_ROOT/qq.json"
+export FULLISH_QQ_CONFIG_FILE="$FULLISH_ROOT/qq.json"
+run_deploy "$image_b"
+assert_success
+assert_state "$image_b" "$image_a"
+assert_restarted
+grep -qx 'QQ_ENABLED=true' "$FULLISH_ROOT/runtime.env" || fail 'QQ not enabled'
+grep -qx 'AI_API_KEY=preserve-this' "$FULLISH_ROOT/runtime.env" || fail 'AI key overwritten'
+[[ $(stat -c '%a' "$FULLISH_ROOT/runtime.env") == 600 ]] || fail 'runtime is not private'
+unset FULLISH_QQ_CONFIG_FILE
+pass
+
+new_case failed_qq_deployment_restores_config
+seed_release "$image_a"
+printf 'AI_API_KEY=old-key\nQQ_ENABLED=false\n' > "$FULLISH_ROOT/runtime.env"
+cp "$FULLISH_ROOT/runtime.env" "$FAKE_DOCKER_STATE/runtime.before"
+printf '{"QQ_APP_ID":"1234","QQ_APP_SECRET":"test-secret"}\n' > "$FULLISH_ROOT/qq.json"
+export FULLISH_QQ_CONFIG_FILE="$FULLISH_ROOT/qq.json"
+printf '%s\n' "$image_b" > "$FAKE_DOCKER_STATE/fail-up"
+run_deploy "$image_b"
+assert_failure
+assert_state "$image_a" ''
+assert_running "$image_a"
+cmp -s "$FAKE_DOCKER_STATE/runtime.before" "$FULLISH_ROOT/runtime.env" || fail 'old config not restored'
+unset FULLISH_QQ_CONFIG_FILE
+pass
+
+new_case invalid_qq_config_never_stops_service
+seed_release "$image_a"
+printf 'AI_API_KEY=old-key\n' > "$FULLISH_ROOT/runtime.env"
+cp "$FULLISH_ROOT/runtime.env" "$FAKE_DOCKER_STATE/runtime.before"
+printf '{"QQ_APP_ID":"1234"}\n' > "$FULLISH_ROOT/qq.json"
+export FULLISH_QQ_CONFIG_FILE="$FULLISH_ROOT/qq.json"
+run_deploy "$image_b"
+assert_failure
+assert_running "$image_a"
+assert_no_stop
+cmp -s "$FAKE_DOCKER_STATE/runtime.before" "$FULLISH_ROOT/runtime.env" || fail 'invalid config changed host'
+unset FULLISH_QQ_CONFIG_FILE
+pass
+
 printf 'All %s deployment transaction scenarios passed.\n' "$case_count"

@@ -50,6 +50,7 @@ Repository variables：
 | --- | --- |
 | `SSH_DEPLOY_KEY` | 专用私钥完整内容 |
 | `SSH_KNOWN_HOSTS` | 已由可信管理员连接验证的 SSH 主机公钥记录 |
+| `QQ_APP_ID` / `QQ_APP_SECRET` | 可选，必须成对设置；部署时同步到服务器并启用 QQ，详见 [QQ 指南](qq-setup.md) |
 
 主机公钥必须通过已有可信连接或腾讯云控制台核对，不能为了连接成功关闭 `StrictHostKeyChecking`。
 
@@ -70,6 +71,6 @@ Repository variables：
 sudo /opt/fullish/bin/rollback.sh
 ```
 
-回滚优先使用本机保存的上一成功镜像，不需要临时 GitHub 凭证。不要清理仍用于回滚的镜像；配置与数据库的恢复需另行处理。
+回滚优先使用本机保存的上一成功镜像，不需要临时 GitHub 凭证。不要清理仍用于回滚的镜像。部署失败时会恢复本次同步前的 QQ 配置；成功部署后的手动镜像回滚继续使用当前凭证。数据库的恢复需另行处理。
 
 部署脚本或 Compose 的变更仍需显式重新安装到服务器。仅修改应用代码时，日常发布只更新镜像。

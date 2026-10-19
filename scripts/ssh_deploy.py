@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -38,6 +39,18 @@ def main() -> int:
             raise ValueError("Invalid registry username.")
         if "\n" in password or "\r" in password:
             raise ValueError("Registry credentials must fit on one line.")
+        qq_id = os.environ.get("QQ_APP_ID", "")
+        qq_secret = os.environ.get("QQ_APP_SECRET", "")
+        qq_config = {}
+        if qq_id or qq_secret:
+            if not re.fullmatch(r"[0-9]{1,32}", qq_id) or (
+                not qq_secret
+                or len(qq_secret) > 512
+                or qq_secret != qq_secret.strip()
+                or any(ord(c) < 32 or ord(c) > 126 for c in qq_secret)
+            ):
+                raise ValueError("Configure both valid QQ_APP_ID and QQ_APP_SECRET secrets.")
+            qq_config = {"QQ_APP_ID": qq_id, "QQ_APP_SECRET": qq_secret}
 
         with tempfile.TemporaryDirectory(prefix="fullish-ssh-") as directory:
             key_path = Path(directory, "deploy_key")
@@ -74,7 +87,7 @@ def main() -> int:
             # Credentials travel through encrypted stdin, never command arguments.
             result = subprocess.run(
                 command,
-                input=f"{username}\n{password}\n",
+                input=f"{username}\n{password}\n{json.dumps(qq_config)}\n",
                 text=True,
                 timeout=960,
                 check=False,
