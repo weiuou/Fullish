@@ -50,7 +50,7 @@ jobs:
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         if: needs.changes.outputs.runtime == 'true'
         with:
-          version: "0.11.3"
+          version: "0.13.1"
           enable-cache: true
       - run: uv sync --locked --group deploy
         if: needs.changes.outputs.runtime == 'true'
@@ -201,7 +201,7 @@ jobs:
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         if: steps.current.outputs.apply == 'true' && vars.DEPLOY_TRANSPORT == 'tat'
         with:
-          version: "0.11.3"
+          version: "0.13.1"
           enable-cache: false
       - name: Install locked deployment dependencies
         if: steps.current.outputs.apply == 'true' && vars.DEPLOY_TRANSPORT == 'tat'
