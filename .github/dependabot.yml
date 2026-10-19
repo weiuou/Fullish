@@ -12,3 +12,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Match requires-python: Python series upgrades need a coordinated migration.
+      - dependency-name: python
+        versions: [">=3.14"]

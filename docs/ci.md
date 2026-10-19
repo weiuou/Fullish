@@ -17,3 +17,11 @@
 仅文档变更不会产生新镜像，也不会改变服务器上 `/version` 返回的构建提交号。
 
 自动更新流程图由内置 ImageGen 生成，原始提示词保存在 [图片说明](assets/deployment-flow.prompt.md)。部署细节见 [SSH 部署](deployment-ssh.md) 或 [TAT 部署](deployment.md)。
+
+## 依赖自动更新
+
+Dependabot 每周检查 GitHub Actions、Python 依赖和 Docker 基础镜像，更新先作为 PR 执行检查，由维护者审查后合并。
+
+Python 镜像的自动版本更新保持在当前支持的 3.13 系列，继续接收补丁和镜像 digest 更新；3.14 及以上版本暂不自动升级。迁移 Python 系列时，需要在独立 PR 中同步 `pyproject.toml` 的版本约束、`.python-version`、Dockerfile 和工具的 Python 目标版本，并重新验证依赖与容器。
+
+uv 的版本固定在 Dockerfile、`pyproject.toml` 的 `tool.uv.required-version` 和工作流中的 `setup-uv` 配置里。升级 uv 时须同步这些位置，并用新版本检查锁文件和构建；只修改 Docker 镜像版本的 PR 会被版本约束拒绝，不应绕过检查合并。

@@ -1,6 +1,7 @@
 """Check SSH validation, encrypted credential delivery and temporary-key cleanup."""
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,8 @@ def configured(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.delenv("QQ_APP_ID", raising=False)
+    monkeypatch.delenv("QQ_APP_SECRET", raising=False)
 
 
 def test_credentials_use_stdin_and_key_is_removed(configured, monkeypatch) -> None:
@@ -40,7 +43,7 @@ def test_credentials_use_stdin_and_key_is_removed(configured, monkeypatch) -> No
         assert "StrictHostKeyChecking=yes" in command
         assert "IdentitiesOnly=yes" in command
         assert "token-placeholder" not in " ".join(command)
-        assert kwargs["input"] == "example\ntoken-placeholder\n"
+        assert kwargs["input"] == "example\ntoken-placeholder\n{}\n"
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(ssh_deploy.subprocess, "run", run)
@@ -58,6 +61,8 @@ def test_credentials_use_stdin_and_key_is_removed(configured, monkeypatch) -> No
         ("FULLISH_IMAGE", "ghcr.io/example/fullish:latest"),
         ("REGISTRY_PULL_USERNAME", "user\nextra"),
         ("REGISTRY_PULL_PASSWORD", "token\nextra"),
+        ("QQ_APP_ID", "1234"),
+        ("QQ_APP_SECRET", "partial-secret"),
     ],
 )
 def test_reject_invalid_input_before_ssh(configured, monkeypatch, name, value) -> None:
@@ -81,3 +86,17 @@ def test_timeout_is_not_retried(configured, monkeypatch, capsys) -> None:
     assert ssh_deploy.main() == 1
     assert len(attempts) == 1
     assert "token-placeholder" not in capsys.readouterr().err
+
+
+def test_qq_credentials_only_travel_in_stdin(configured, monkeypatch) -> None:
+    monkeypatch.setenv("QQ_APP_ID", "1234")
+    monkeypatch.setenv("QQ_APP_SECRET", "qq-secret-placeholder")
+
+    def run(command, **kwargs):
+        assert "qq-secret-placeholder" not in " ".join(command)
+        payload = json.loads(kwargs["input"].splitlines()[2])
+        assert payload == {"QQ_APP_ID": "1234", "QQ_APP_SECRET": "qq-secret-placeholder"}
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(ssh_deploy.subprocess, "run", run)
+    assert ssh_deploy.main() == 0

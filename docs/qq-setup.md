@@ -11,7 +11,17 @@
 
 参考：[官方鉴权说明](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/api-use.html)、[腾讯 SDK 使用说明](https://github.com/tencent-connect/qqbot-nodejs/blob/main/USAGE.md)、[NoneBot QQ 适配器](https://github.com/nonebot/adapter-qq)。
 
-## 配置到服务器
+## 推荐：在 GitHub 配置
+
+进入仓库 Settings → Environments → production → Environment secrets，添加 `QQ_APP_ID` 和 `QQ_APP_SECRET`。两项都设置时，SSH 部署会同步凭证并启用 QQ；缺少其中一项会在连接服务器前报错，两项均未设置则保留服务器配置。
+
+随后在 Actions 手动运行 `CI and delivery`，勾选 `deploy`，或合并一次代码修改。仅添加 / 修改 Secret 不会自动触发 Actions；纯文档提交仍不会构建、发布或部署。
+
+凭证只提供给受保护的 `main` 部署 job，通过加密 SSH 的 stdin 发送，不写命令参数、镜像、构建产物或日志。服务器在部署锁内写入权限 `0600` 的 `/opt/fullish/runtime.env`，保留已有 CPA 配置；部署失败时恢复先前配置再回滚容器。临时传输文件在部署结束后删除。
+
+此凭证同步目前仅支持默认 SSH 路线；TAT 部署需在服务器手动配置。QQ 应用密钥失效或平台权限不足时，进程健康不等于 QQ 登录成功，应检查 `qq_connected`。
+
+## 可选：直接配置服务器
 
 编辑服务器 `/opt/fullish/runtime.env`，保留已有 AI 配置，添加：
 
