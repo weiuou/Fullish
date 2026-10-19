@@ -23,7 +23,9 @@ if [[ -f $state ]]; then
     [[ -z $previous ]] || valid_image "$previous" || die 'Invalid previous image in release state.'
 fi
 target=$1
+rollback_mode=0
 if [[ $target == --rollback ]]; then
+    rollback_mode=1
     [[ -n $previous ]] || die 'No previous successful image is available.'
     target=$previous
 fi
@@ -63,7 +65,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Pull and validate before stopping the old process. Never prune rollback images.
-timeout 300 docker pull "$target" >/dev/null
+if (( rollback_mode == 0 )) || ! docker image inspect "$target" >/dev/null 2>&1; then
+    timeout 300 docker pull "$target" >/dev/null
+fi
 healthcheck=$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$target")
 [[ $healthcheck != null && $healthcheck != '[]' && $healthcheck != '["NONE"]' ]] || die 'Candidate image has no usable healthcheck.'
 if [[ -n $current ]] && ! docker image inspect "$current" >/dev/null 2>&1; then

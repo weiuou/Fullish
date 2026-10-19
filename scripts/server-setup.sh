@@ -75,4 +75,4 @@ printf '%s\n' "$repository" > "$root/image-repository"
 chmod 600 "$root/image-repository" "$root/runtime.env"
 applying=0
 printf 'Installed infrastructure at %s; no application was started.\n' "$root"
-printf 'Next: verify registry pull access as root, then configure the saved TAT command.\n'
+printf 'Next: configure restricted SSH or the saved TAT deployment command.\n'
