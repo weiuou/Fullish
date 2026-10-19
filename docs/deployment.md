@@ -1,4 +1,6 @@
-# 腾讯云服务器部署指南
+# 腾讯云 TAT 部署指南（可选）
+
+默认的受限 SSH 路线见 [SSH 部署指南](deployment-ssh.md)。本篇选择 TAT 时，需要设置 `DEPLOY_TRANSPORT=tat`。
 
 本文面向基本空闲的 Ubuntu / Debian 云服务器，使用 GitHub Actions 构建镜像，腾讯云自动化助手 TAT 触发服务器更新。操作完成后，合并到 `main` 会执行检查、发布镜像、更新容器并验证健康状态。
 
@@ -113,6 +115,7 @@ TAT 凭证可以触发 root 身份的部署，属于生产权限。固定命令�
 | 名称 | 内容 |
 | --- | --- |
 | `DEPLOY_ENABLED` | 配置与首次验证完成后设为 `true`；未设置时仅检查和构建，不部署 |
+| `DEPLOY_TRANSPORT` | 本篇使用 `tat`；受限 SSH 路线使用 `ssh` |
 | `DEPLOY_PLATFORM` | 可不填，默认 `linux/amd64`；ARM 服务器填 `linux/arm64` |
 | `IMAGE_REPOSITORY` | 可不填，默认 `ghcr.io/owner/repo`；使用 TCR 时填完整仓库路径，不含标签或 digest |
 | `REGISTRY_USERNAME` | 仅自定义镜像仓库使用的推送用户名 |
