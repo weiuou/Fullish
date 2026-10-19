@@ -12,6 +12,7 @@ from fullish import __version__
 from fullish.conversation import Conversations
 from fullish.model import ChatModel
 from fullish.settings import ModelSettings, QQSettings
+from fullish.telemetry import emit
 
 
 @lru_cache(maxsize=1)
@@ -65,10 +66,20 @@ def create_app() -> FastAPI:
     @driver.on_startup
     async def mark_ready() -> None:
         app.state.ready = True
+        emit("service.started", revision=revision, mode=mode)
+
+    @driver.on_bot_connect
+    async def connected() -> None:
+        emit("qq.connection.connected")
+
+    @driver.on_bot_disconnect
+    async def disconnected() -> None:
+        emit("qq.connection.disconnected", level="WARNING")
 
     @driver.on_shutdown
     async def mark_stopped() -> None:
         app.state.ready = False
+        emit("service.stopping", revision=revision)
         if model:
             await model.close()
 

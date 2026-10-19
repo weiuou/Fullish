@@ -82,6 +82,26 @@ sudo docker exec fullish-bot-1 python -m fullish.check_model
 
 每群保留最近 60 条、总计不超过 6000 字的消息（文字、`[表情]`、`[图片]` 都计入），上下文空闲 30 分钟后在下一次消息处理时清理；最多 50 个群，部署或重启会清空。普通群消息用于上下文，@ 或提到 Fullish 才触发生成；暂不随机插话。每群最多一个生成请求，全局最多四个，每群两次调用至少相隔五秒。忙碌期间的新消息保留为后续上下文，但不排队生成。
 
+只 @ 机器人、不附带文字也是有效呼叫。适配器去掉 @ 后，应用用 `（@了 Fullish）` 表达这次呼叫并正常请求模型；无文字的其他消息也保留上下文，不以空文本为由丢弃。
+
 纯图片、表情的消息也会进入上下文，不再被丢弃。真正要回复时，只把最近两分半钟内最多四张图的字节（单张上限 2 MB，仅 JPEG / PNG / GIF / WebP，按文件头校验）以 data URL 附在各自原始用户消息上，保留发送者和消息顺序。更早、未选中或下载失败的图片保留 `[图片]` 占位，模型不会猜测内容。图片由独立的 HTTP 客户端下载，不带模型密钥；下载和模型调用共用本次回复的总超时，单图下载仍最多 15 秒。无法识别文件头的内容会跳过，即使响应头声称是图片。如果 CPA 不支持多模态输入，请求会失败并只记录错误码，需要改用文字描述方案。
 
 回复默认为一到三句，避免客服套话，保留选择沉默的能力。长期记忆、主动插话评测和过时话题判断仍是后续工作。
+
+## 追踪消息流转
+
+应用在 INFO 级别输出 `flow {JSON}` 结构化日志。同一条群消息从官方事件接收、解析分发、内容解析、上下文记录、触发决策、图片下载、模型请求与响应，到 QQ 发送和最终处理结果，使用同一个 `trace_id`。`group_ref` 和 `sender_ref` 是原始标识的摘要，便于关联而不直接输出 OpenID。启动、停止、QQ 连接与断开也有对应事件。
+
+`conversation.generating.context_trace_ids` 按模型输入顺序列出历史消息来源；图片日志里的 `source_trace_id` 指向图片所属的历史消息，当前 `trace_id` 指向本次请求。发送成功后才记录 assistant 上下文。`qq.message.completed` 是处理结束记录，结果为 `sent`、`no_reply`、`failed` 或 `cancelled`；发送成功表示 QQ API 接受请求，不代表客户端已阅读。
+
+不生成时，`conversation.skipped.reason` 明确记录 `context_only`（仅上下文）、`duplicate`、`group_not_allowed`、`group_busy`、`global_capacity`、`group_capacity` 或 `cooldown`。模型选择沉默记录为 `model.completed.outcome=silence`。图片失败保留占位，并记录 HTTP 状态、格式不符、超限或连接问题；模型和 QQ 发送失败记录安全错误码、所在阶段及耗时，不输出上游响应正文、密钥、图片 URL、图片字节或聊天正文。
+
+在服务器查看最近的结构化日志（需安装 `jq`）：
+
+```sh
+sudo docker logs --since 30m fullish-bot-1 2>&1 | sed -n 's/^.*flow //p' | jq -c .
+# 把上一步找到的 trace_id 填入，查看一条消息的完整过程。
+sudo docker logs --since 30m fullish-bot-1 2>&1 | sed -n 's/^.*flow //p' | jq -c 'select(.trace_id == "填入trace_id")'
+```
+
+保持 `LOG_LEVEL=INFO` 才能看到正常路径。日志由现有 Docker 日志轮转保留（单文件 10 MB、最多 3 个），容器被替换后旧容器日志不再保留；需要长期审计时应由宿主机采集到持久日志服务。未出现 `qq.event.received` 表示应用未收到该事件，应继续排查 QQ 连接和平台权限。

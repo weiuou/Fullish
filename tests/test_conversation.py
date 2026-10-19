@@ -87,8 +87,9 @@ def test_image_only_messages_join_context_and_reach_the_model() -> None:
             assert turns[0]["content"] == "群成员 alice: [图片]"
             assert turns[0]["images"] == ["http://cdn/1.jpg"]
             assert turns[1]["images"] == []
-            # Empty payloads with no picture at all are still dropped.
-            assert await conversations.receive("a", "3", "bob", "   ", addressed=True) is None
+            # Messages without text are retained even without a mention or image.
+            assert await conversations.receive("a", "3", "bob", "   ", addressed=False) is None
+            assert conversations.groups["a"].turns[-1]["content"] == "群成员 bob: [无文字内容]"
         finally:
             await model.close()
 

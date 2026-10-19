@@ -8,6 +8,7 @@ from typing import TypedDict
 
 from fullish.model import ChatModel
 from fullish.model import Turn as ModelTurn
+from fullish.telemetry import emit, message_trace, reference, trace_id
 
 HISTORY_MESSAGES = 60
 HISTORY_CHARS = 6000
@@ -21,6 +22,7 @@ class Turn(TypedDict):
     content: str
     images: list[str]
     created: float
+    trace_id: str
 
 
 def turn(role: str, content: str, *, images: list[str] | None = None) -> Turn:
@@ -29,6 +31,7 @@ def turn(role: str, content: str, *, images: list[str] | None = None) -> Turn:
         "content": content,
         "images": images or [],
         "created": time.monotonic(),
+        "trace_id": trace_id(),
     }
 
 
@@ -58,36 +61,77 @@ class Conversations:
         addressed: bool,
         images: list[str] | None = None,
     ) -> str | None:
+        with message_trace(group_id, message_id):
+            return await self._receive(
+                group_id, message_id, sender, text, addressed=addressed, images=images
+            )
+
+    async def _receive(
+        self,
+        group_id: str,
+        message_id: str,
+        sender: str,
+        text: str,
+        *,
+        addressed: bool,
+        images: list[str] | None,
+    ) -> str | None:
         images = images or []
-        if not text.strip() and not images:
-            return None
+        emit(
+            "conversation.received",
+            sender_ref=reference(sender),
+            text_chars=len(text),
+            image_count=len(images),
+            addressed=addressed,
+        )
         if self.allowed_groups and group_id not in self.allowed_groups:
+            emit("conversation.skipped", reason="group_not_allowed")
             return None
+        # The adapter strips our mention. An empty remainder is still a valid call.
+        if not text.strip():
+            text = "（@了 Fullish）" if addressed else "[图片]" if images else "[无文字内容]"
+            emit("conversation.normalized", reason="mention_only" if addressed else "no_text")
         now = time.monotonic()
         # Never evict an in-flight group's lock, including when its context expires.
         for key, group in list(self.groups.items()):
             if not group.lock.locked() and now - group.touched > GROUP_IDLE_SECONDS:
                 del self.groups[key]
+                emit("context.evicted", evicted_group_ref=reference(key), reason="idle")
         if group_id not in self.groups:
             if len(self.groups) >= 50:
                 victim = next((k for k, v in self.groups.items() if not v.lock.locked()), None)
                 if victim is None:
+                    emit("conversation.skipped", reason="group_capacity")
                     return None
                 del self.groups[victim]
+                emit("context.evicted", evicted_group_ref=reference(victim), reason="capacity")
             self.groups[group_id] = Group()
         group = self.groups[group_id]
         group.touched = now
         self.groups.move_to_end(group_id)
         if message_id in group.seen:
+            emit("conversation.skipped", reason="duplicate")
             return None
         group.seen.append(message_id)
         group.turns.append(turn("user", f"群成员 {sender}: {text[:2000]}", images=list(images)))
         self._trim(group.turns)
+        emit("context.recorded", role="user", history_turns=len(group.turns))
         called = addressed or "fullish" in text.lower()
         # Initially speak only when addressed or named. Other messages provide context.
-        if not called or group.lock.locked() or self.active >= 4:
+        reason = (
+            "context_only"
+            if not called
+            else "group_busy"
+            if group.lock.locked()
+            else "global_capacity"
+            if self.active >= 4
+            else None
+        )
+        if reason:
+            emit("conversation.skipped", reason=reason)
             return None
         if now - group.last_attempt < 5:
+            emit("conversation.skipped", reason="cooldown")
             return None
         group.last_attempt = now
         async with group.lock:
@@ -105,8 +149,22 @@ class Conversations:
                     )
                     remaining -= len(recent)
                     history.append(
-                        {"role": item["role"], "content": item["content"], "images": recent}
+                        {
+                            "role": item["role"],
+                            "content": item["content"],
+                            "images": recent,
+                            "trace_id": item["trace_id"],
+                        }
                     )
+                emit(
+                    "conversation.generating",
+                    trigger="mention" if addressed else "name",
+                    history_turns=len(history),
+                    context_trace_ids=[item["trace_id"] for item in group.turns],
+                    image_count=MAX_IMAGES - remaining,
+                    omitted_images=sum(len(item["images"]) for item in group.turns)
+                    - (MAX_IMAGES - remaining),
+                )
                 return await self.model.reply(history[::-1], addressed=called)
             finally:
                 self.active -= 1
@@ -116,10 +174,16 @@ class Conversations:
         if group := self.groups.get(group_id):
             group.turns.append(turn("assistant", text))
             self._trim(group.turns)
+            emit("context.recorded", role="assistant", history_turns=len(group.turns))
 
     @staticmethod
     def _trim(turns: deque[Turn]) -> None:
         # Character budget tracks the real prompt cost better than a fixed count.
         total = sum(len(item["content"]) for item in turns)
+        removed: list[str] = []
         while total > HISTORY_CHARS and len(turns) > 1:
-            total -= len(turns.popleft()["content"])
+            item = turns.popleft()
+            total -= len(item["content"])
+            removed.append(item["trace_id"])
+        if removed:
+            emit("context.trimmed", reason="character_budget", removed_trace_ids=removed)

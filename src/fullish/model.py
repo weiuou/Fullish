@@ -2,12 +2,14 @@
 
 import asyncio
 import base64
+import time
 from typing import NotRequired, TypedDict
 from urllib.parse import urlsplit
 
 import httpx
 
 from fullish.settings import ModelSettings
+from fullish.telemetry import elapsed_ms, emit, operation_trace
 
 PERSONA = """你是 Fullish，QQ 群里的 AI 伙伴。用自然、简短的中文参与讨论。
 先理解最近大家在聊什么，再回应当前说话的人，别把其他人的发言当成同一个人。
@@ -27,6 +29,7 @@ class Turn(TypedDict):
     role: str
     content: str
     images: NotRequired[list[str]]
+    trace_id: NotRequired[str]
 
 
 class ModelError(RuntimeError):
@@ -66,36 +69,108 @@ class ChatModel:
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
             return False
 
-    async def download(self, url: str) -> str | None:
+    async def download(
+        self, url: str, *, source_trace_id: str = "", image_index: int = 0
+    ) -> str | None:
         """Return a data URL for a bounded image fetch, or None when unusable."""
+        start = time.monotonic()
+        fields = {"source_trace_id": source_trace_id, "image_index": image_index}
+        emit("image.download.started", **fields)
+        outcome = "cancelled"
+        size = 0
         try:
             parsed = urlsplit(url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                outcome = "invalid_url"
                 return None
             async with asyncio.timeout(15):
                 async with self.media.stream("GET", url) as response:
                     response.raise_for_status()
                     chunks: list[bytes] = []
-                    size = 0
                     async for chunk in response.aiter_bytes():
                         size += len(chunk)
                         if size > MAX_IMAGE_BYTES:
+                            outcome = "too_large"
                             return None
                         chunks.append(chunk)
-        except (httpx.HTTPError, TimeoutError, ValueError):
+            body = b"".join(chunks)
+            media_type = sniff_image_type(body)
+            if media_type not in IMAGE_TYPES or not body:
+                outcome = "invalid_image"
+                return None
+            encoded = base64.b64encode(body).decode("ascii")
+            outcome = "success"
+            return f"data:{media_type};base64,{encoded}"
+        except httpx.HTTPStatusError as error:
+            outcome = f"http_{error.response.status_code}"
             return None
-        body = b"".join(chunks)
-        media_type = sniff_image_type(body)
-        if media_type not in IMAGE_TYPES or not body:
+        except (httpx.TimeoutException, TimeoutError):
+            outcome = "timeout"
             return None
-        encoded = base64.b64encode(body).decode("ascii")
-        return f"data:{media_type};base64,{encoded}"
+        except ValueError:
+            outcome = "invalid_url"
+            return None
+        except httpx.HTTPError:
+            outcome = "connection_error"
+            return None
+        except Exception:
+            outcome = "unexpected_error"
+            raise
+        finally:
+            emit(
+                "image.download.completed",
+                **fields,
+                outcome=outcome,
+                bytes_received=size,
+                elapsed_ms=elapsed_ms(start),
+            )
 
     async def reply(self, turns: list[Turn], *, addressed: bool) -> str | None:
+        with operation_trace():
+            start = time.monotonic()
+            emit(
+                "model.preparing",
+                model=self.settings.model,
+                history_turns=len(turns),
+                addressed=addressed,
+                timeout_seconds=self.settings.timeout,
+            )
+            try:
+                result = await self._reply(turns, addressed=addressed)
+            except ModelError as error:
+                emit(
+                    "model.failed",
+                    level="WARNING",
+                    error_code=str(error),
+                    elapsed_ms=elapsed_ms(start),
+                )
+                raise
+            except asyncio.CancelledError:
+                emit("model.cancelled", elapsed_ms=elapsed_ms(start))
+                raise
+            except Exception as error:
+                emit(
+                    "model.failed",
+                    level="WARNING",
+                    error_type=type(error).__name__,
+                    elapsed_ms=elapsed_ms(start),
+                )
+                raise
+            emit(
+                "model.completed",
+                outcome="silence" if result is None else "reply",
+                text_chars=len(result or ""),
+                elapsed_ms=elapsed_ms(start),
+            )
+            return result
+
+    async def _reply(self, turns: list[Turn], *, addressed: bool) -> str | None:
         # One deadline covers media downloads and the model request together.
         try:
             async with asyncio.timeout(self.settings.timeout):
                 payload = await self._messages(turns, addressed)
+                emit("model.request.started", prompt_messages=len(payload))
+                start = time.monotonic()
                 response = await self.client.post(
                     "chat/completions",
                     json={
@@ -104,6 +179,11 @@ class ChatModel:
                         "max_tokens": 1024,
                         "stream": False,
                     },
+                )
+                emit(
+                    "model.response.received",
+                    status_code=response.status_code,
+                    elapsed_ms=elapsed_ms(start),
                 )
                 response.raise_for_status()
                 content = response.json()["choices"][0]["message"]["content"]
@@ -123,8 +203,10 @@ class ChatModel:
         for item in turns:
             available: list[str] = []
             if item["role"] == "user":
-                for url in item.get("images", []):
-                    if data := await self.download(url):
+                for index, url in enumerate(item.get("images", [])):
+                    if data := await self.download(
+                        url, source_trace_id=item.get("trace_id", ""), image_index=index
+                    ):
                         available.append(data)
             if available:
                 messages.append(
