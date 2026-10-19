@@ -39,7 +39,7 @@ flowchart LR
     B --> C[合并 main]
     C --> D[测试与构建容器镜像]
     D --> E[GHCR 或配置的镜像仓库]
-    E --> F[腾讯云 TAT 执行部署命令]
+    E --> F[受限 SSH 或腾讯云 TAT 执行部署命令]
     F --> G[服务器拉取指定 digest]
     G --> H[Compose 更新与健康检查]
     H -->|失败| I[尝试恢复上一镜像]
@@ -47,7 +47,7 @@ flowchart LR
 
 服务器只负责运行已构建的镜像。首次初始化完成后，合并到 `main` 即可触发更新。自动部署默认关闭，配置完成后设置 `DEPLOY_ENABLED=true` 开启。
 
-腾讯云 Ubuntu / Debian 的完整首次操作、GitHub 变量与权限设置、验收和回滚见 [部署指南](docs/deployment.md)。多人协作约定见 [贡献指南](CONTRIBUTING.md)，设计边界见 [架构说明](docs/architecture.md)。
+腾讯云 Ubuntu / Debian 的首次操作、GitHub 变量与权限设置、验收和回滚见 [SSH 部署指南](docs/deployment-ssh.md)；也可选择 [TAT 部署指南](docs/deployment.md)。多人协作约定见 [贡献指南](CONTRIBUTING.md)，设计边界见 [架构说明](docs/architecture.md)。
 
 ## 目录
 
