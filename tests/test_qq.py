@@ -5,10 +5,10 @@ import subprocess
 import sys
 from unittest.mock import Mock, patch
 
-from nonebot.adapters.qq import Adapter, Bot
+from nonebot.adapters.qq import Adapter, Bot, Message, MessageSegment
 from nonebot.adapters.qq.models import Dispatch
 
-from fullish.qq import GroupOnlyAdapter
+from fullish.qq import GroupOnlyAdapter, describe
 
 
 def test_private_dispatch_is_discarded() -> None:
@@ -22,6 +22,23 @@ def test_private_dispatch_is_discarded() -> None:
         payload = Dispatch.model_validate({"op": 0, "s": 2, "t": "GROUP_MESSAGE_CREATE", "d": {}})
         adapter.dispatch_event(bot, payload)
         dispatch.assert_called_once_with(bot, payload)
+
+
+def test_message_content_keeps_stickers_and_images() -> None:
+    message = (
+        MessageSegment.text("看这个 ")
+        + MessageSegment.image("https://cdn.example/1.png")
+        + MessageSegment.emoji("1")
+        + MessageSegment.text(" 哈哈")
+    )
+    text, images = describe(message)
+    # get_plaintext() would drop everything but "看这个 哈哈".
+    assert text == "看这个 [图片][表情] 哈哈"
+    assert images == ["https://cdn.example/1.png"]
+    assert describe(Message(MessageSegment.image("https://cdn.example/2.png"))) == (
+        "[图片]",
+        ["https://cdn.example/2.png"],
+    )
 
 
 def test_configured_qq_driver_and_model_lifecycle() -> None:
