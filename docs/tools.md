@@ -46,7 +46,7 @@ broker 固定镜像、路径、用户、网络和限制，模型不能传入 Doc
 
 ## 运行时与资源限制
 
-固定版本的完整 gVisor 包由 `scripts/sandbox-runtime-setup.sh` 下载并核对 SHA-512；当前验收平台是 x86_64 Linux、cgroup v2 和 systemd。安装器只配置独立用户的 Rootless Docker，不修改生产 Docker。
+固定版本的完整 gVisor 包由 `scripts/sandbox-runtime-setup.sh` 下载并核对 SHA-512；当前验收平台是 x86_64 Linux、cgroup v2 和 systemd。安装器只配置独立用户的 Rootless Docker，不修改生产 Docker。该专用 daemon 不创建默认网桥或 NAT，避免依赖宿主机 netfilter 权限；任务始终使用 `network=none`。可信构建阶段如需网络，可显式使用 rootless 构建的 `--network=host`，不影响运行时断网策略。
 
 Rootless 环境下 runsc 自行遍历根 cgroup 会遇到权限错误。`scripts/sandbox-runsc.py` 将每个容器的 Sentry、Gofer 和后续 exec 进程加入同一个用户 systemd service，由 systemd 设置 CPU、内存、swap 和进程数硬限额。仅在核实这些实际控制文件后才启动 runsc。
 

@@ -86,6 +86,10 @@ config = json.loads(before)
 config.setdefault('runtimes', {})['runsc'] = {
     'path': '/opt/fullish-sandbox/sandbox-runsc.py', 'runtimeArgs': ['--platform=systrap']}
 config['exec-opts'] = ['native.cgroupdriver=systemd']
+# Workload containers always use network=none. A default bridge/NAT is neither
+# needed nor permitted; rootless daemons cannot assume host netfilter access.
+config.update({'bridge': 'none', 'iptables': False, 'ip6tables': False,
+               'ip-forward': False, 'ip-masq': False})
 if json.loads(before) != config:
     fd, name = tempfile.mkstemp(dir=directory)
     with os.fdopen(fd, 'w') as output:
