@@ -53,6 +53,7 @@ unit_changed=false
 sandbox_gid=$(id -g fullish-sandbox)
 unit_directory="$sandbox_home/.config/systemd/user"
 for directory in "$sandbox_home/.config" "$sandbox_home/.config/systemd" "$unit_directory" "$unit_directory/docker.service.d"; do
+    [[ ! -L $directory ]] || die 'Dedicated configuration directories must not be symlinks.'
     install -d -o "$sandbox_uid" -g "$sandbox_gid" -m 700 "$directory"
 done
 if [[ ! -f $unit_directory/docker.service ]]; then
@@ -70,10 +71,15 @@ rm -f -- "$environment_file"
 "${user_command[@]}" systemctl --user daemon-reload
 # Configuration changes are detected, so repeated setup does not restart a healthy sandbox.
 changed=$(python3 - "$sandbox_home" "$sandbox_uid" <<'PY'
-import json, os, pathlib, sys, tempfile
+import json, os, pathlib, pwd, sys, tempfile
 home, uid = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+gid = pwd.getpwnam('fullish-sandbox').pw_gid
 directory = home / '.config/docker'
+if directory.is_symlink() or not directory.resolve().is_relative_to(home):
+    raise SystemExit('Invalid dedicated Docker config directory.')
 directory.mkdir(parents=True, exist_ok=True)
+os.chown(directory, uid, gid)
+directory.chmod(0o700)
 path = directory / 'daemon.json'
 before = path.read_text() if path.exists() else '{}'
 config = json.loads(before)
@@ -84,7 +90,7 @@ if json.loads(before) != config:
     fd, name = tempfile.mkstemp(dir=directory)
     with os.fdopen(fd, 'w') as output:
         output.write(json.dumps(config) + '\n')
-    os.chown(name, uid, int(__import__('pwd').getpwnam('fullish-sandbox').pw_gid))
+    os.chown(name, uid, gid)
     os.replace(name, path)
     print('yes')
 PY
