@@ -43,10 +43,11 @@ if [[ ! -f $runtime/.verified ]]; then
 fi
 ln -sfn runtime-20261012.0 "$root/runtime"
 install -m 755 "$source_root/scripts/sandbox-runsc.py" "$root/sandbox-runsc.py"
-loginctl enable-linger fullish-sandbox
 install -d -m 755 "/etc/systemd/system/user@$sandbox_uid.service.d"
 printf '[Service]\nDelegate=cpu memory pids\n' > "/etc/systemd/system/user@$sandbox_uid.service.d/fullish-delegate.conf"
 systemctl daemon-reload
+# Linger can start the user manager immediately; install delegation first.
+loginctl enable-linger fullish-sandbox
 systemctl start "user@$sandbox_uid.service"
 user_command=(runuser -u fullish-sandbox -- env -i PATH=/usr/local/bin:/usr/bin:/bin "HOME=$sandbox_home" USER=fullish-sandbox LOGNAME=fullish-sandbox "XDG_RUNTIME_DIR=/run/user/$sandbox_uid" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$sandbox_uid/bus")
 unit_changed=false
