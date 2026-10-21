@@ -61,6 +61,7 @@ async def handle_group(
                 "qq.message.parsed",
                 text_chars=len(message.content.text),
                 image_count=len(message.content.image_urls),
+                reply_image_count=len(message.reply.content.image_urls) if message.reply else 0,
                 segment_types=[segment.type for segment in event.get_message()],
                 addressed=message.addressed,
             )
