@@ -11,6 +11,7 @@ from nonebot.adapters.qq.models import Dispatch
 
 from fullish.collection.qq import collect_group_message
 from fullish.conversation import Conversations
+from fullish.message_queue import GroupMessageQueue
 from fullish.model import ModelError
 from fullish.sending.qq import send_reply
 from fullish.sending.schema import outgoing
@@ -39,7 +40,9 @@ class GroupOnlyAdapter(Adapter):
         return event
 
 
-def install_group_handler(conversations: Conversations) -> None:
+def install_group_handler(conversations: Conversations) -> GroupMessageQueue:
+    queue = GroupMessageQueue()
+
     async def is_group(event: GroupMessageCreateEvent) -> bool:
         return True
 
@@ -47,7 +50,11 @@ def install_group_handler(conversations: Conversations) -> None:
 
     @matcher.handle()
     async def handle(bot: Bot, event: GroupMessageCreateEvent) -> None:
-        await handle_group(conversations, bot, event)
+        await queue.submit(
+            event.group_openid, event.id, lambda: handle_group(conversations, bot, event)
+        )
+
+    return queue
 
 
 async def handle_group(

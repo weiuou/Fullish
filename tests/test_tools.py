@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from fullish.conversation import Conversations
-from fullish.model import ChatModel, ModelError
+from fullish.model import MAX_TOOL_CALLS, ChatModel, ModelError
 from fullish.settings import ModelSettings, ToolSettings
 from fullish.tools import ToolContext, ToolRuntime
 from fullish.tools.web import ToolError, public_url
@@ -140,7 +140,7 @@ def test_denied_group_no_context_and_quota_do_not_execute() -> None:
                 )
             )
             assert result["error"] == "tools_not_allowed"
-            for _ in range(6):
+            for _ in range(24):
                 assert json.loads(await tools.invoke("sandbox_exec", '{"command":"id"}', CONTEXT))[
                     "ok"
                 ]
@@ -148,7 +148,7 @@ def test_denied_group_no_context_and_quota_do_not_execute() -> None:
                 json.loads(await tools.invoke("sandbox_exec", '{"command":"id"}', CONTEXT))["error"]
                 == "tool_rate_limited"
             )
-            assert len(requests) == 6
+            assert len(requests) == 24
         finally:
             await tools.close()
 
@@ -246,8 +246,9 @@ def test_tool_loop_is_bounded_and_cannot_accept_invalid_batches():
         def chat(request):
             payload = json.loads(request.content)
             requests.append(payload)
-            if len(requests) == 5:
-                assert payload["tool_choice"] == "none"
+            if len(requests) == MAX_TOOL_CALLS + 1:
+                assert "tools" not in payload and "tool_choice" not in payload
+                return response({"content": "已经查到一些资料，但还不能确认。"})
             return response(
                 {"tool_calls": [call(identifier=f"call-{len(requests)}")], "content": None}
             )
@@ -258,9 +259,11 @@ def test_tool_loop_is_bounded_and_cannot_accept_invalid_batches():
             transport=httpx.MockTransport(chat),
         )
         try:
-            with pytest.raises(ModelError, match="tool_call_limit"):
+            assert (
                 await model.reply([], addressed=True, context=CONTEXT)
-            assert len(executions) == 4 and len(requests) == 5
+                == "已经查到一些资料，但还不能确认。"
+            )
+            assert len(executions) == MAX_TOOL_CALLS and len(requests) == MAX_TOOL_CALLS + 1
         finally:
             await model.close()
         tools = runtime(lambda request: executions.append(request) or httpx.Response(200, json={}))
@@ -272,7 +275,7 @@ def test_tool_loop_is_bounded_and_cannot_accept_invalid_batches():
         try:
             with pytest.raises(ModelError, match="invalid_tool_call"):
                 await model.reply([], addressed=True, context=CONTEXT)
-            assert len(executions) == 4
+            assert len(executions) == MAX_TOOL_CALLS
         finally:
             await model.close()
 

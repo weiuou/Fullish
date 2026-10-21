@@ -83,7 +83,7 @@ sudo docker exec fullish-bot-1 python -m fullish.check_model
 
 ## 当前聊天策略
 
-每群保留最近 60 条、总计不超过 6000 字的消息（引用正文、文字、`[表情]`、`[图片]` 都计入），上下文空闲 30 分钟后在下一次消息处理时清理；最多 50 个群，部署或重启会清空。普通群消息用于上下文，@ 或当前正文提到 Fullish 才触发生成；暂不随机插话。每群最多一个生成请求，全局最多四个，每群两次调用至少相隔五秒。忙碌期间的新消息保留为后续上下文，但不排队生成。
+每群保留最近 60 条、总计不超过 6000 字的消息（引用正文、文字、`[表情]`、`[图片]` 都计入），上下文空闲 30 分钟后在下一次消息处理时清理；最多 50 个群，部署或重启会清空。普通群消息用于上下文，@ 或当前正文提到 Fullish 才触发生成；暂不随机插话。消息进入按群隔离的 FIFO 队列，同群完整处理“生成 → 发送 → 发送确认后记录上下文”后才消费下一条，避免下一条 @ 被忙碌规则丢弃或抢在上一条发送前生成。不同群并行，全局模型生成最多四个；并发名额不足或距离该群上次生成不足五秒时等待，不直接跳过。每群队列最多暂存 100 条，满时入口等待空间；普通消息同样按顺序进入上下文。队列位于进程内，停机最多等待 20 秒排空，超时会取消并记录尚未处理的消息；重启不恢复待处理消息，严重积压还可能超过 QQ 的回复有效期。
 
 消息采集由独立的 `collection` 模块处理，各类内容有单独解析器。语音、视频和文件先保留 `[语音]`、`[视频]`、`[文件]` 占位及附件元数据，不读取内容；表情 ID 和 @ 目标也会保留。发送者使用平台成员 OpenID，平台有 `username` 时同时保存显示名，正文不能改写发送者字段。模型输入使用 JSON 分开封装身份与正文；上述 6000 字限制针对正文，元数据另存。扩展入口及限制见 [群消息采集与解析](message-collection.md)。
 
@@ -101,7 +101,7 @@ sudo docker exec fullish-bot-1 python -m fullish.check_model
 
 `conversation.generating.context_trace_ids` 按模型输入顺序列出历史消息来源；图片日志里的 `source_trace_id` 指向图片所属的历史消息，当前 `trace_id` 指向本次请求。发送成功后才记录 assistant 上下文。`qq.message.completed` 是处理结束记录，结果为 `sent`、`no_reply`、`failed` 或 `cancelled`；发送成功表示 QQ API 接受请求，不代表客户端已阅读。
 
-不生成时，`conversation.skipped.reason` 明确记录 `context_only`（仅上下文）、`duplicate`、`group_not_allowed`、`group_busy`、`global_capacity`、`group_capacity` 或 `cooldown`。模型选择沉默记录为 `model.completed.outcome=silence`。图片失败保留占位，并记录 HTTP 状态、格式不符、超限或连接问题；模型和 QQ 发送失败记录安全错误码、所在阶段及耗时，不输出上游响应正文、密钥、图片 URL、图片字节或聊天正文。
+不生成时，`conversation.skipped.reason` 明确记录 `context_only`（仅上下文）、`duplicate`、`group_not_allowed` 或 `group_capacity`。`conversation.waiting.reason` 记录 `group_busy`、`global_capacity` 或 `cooldown` 的等待；`queue.enqueued` / `queue.dequeued` 记录入队、队列深度和等待时间，停机未排空记录 `queue.cancelled`。模型选择沉默记录为 `model.completed.outcome=silence`。图片失败保留占位，并记录 HTTP 状态、格式不符、超限或连接问题；模型和 QQ 发送失败记录安全错误码、所在阶段及耗时，不输出上游响应正文、密钥、图片 URL、图片字节或聊天正文。
 
 在服务器查看最近的结构化日志（需安装 `jq`）：
 

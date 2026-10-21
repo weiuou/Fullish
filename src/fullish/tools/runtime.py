@@ -138,9 +138,9 @@ class ToolRuntime:
     def charge(self, context: ToolContext) -> None:
         now = time.monotonic()
         keys = [
-            ("all", 60),
-            ("group:" + context.group_id, 20),
-            ("user:" + context.group_id + ":" + context.sender_id, 6),
+            ("all", 120),
+            ("group:" + context.group_id, 60),
+            ("user:" + context.group_id + ":" + context.sender_id, 24),
         ]
         for key, limit in keys:
             bucket = self.usage.setdefault(key, deque())

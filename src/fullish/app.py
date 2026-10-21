@@ -80,17 +80,22 @@ def create_app() -> FastAPI:
         else None
     )
     app.state.model = model
+    queue = None
     if qq_settings and model:
         from fullish.qq import GroupOnlyAdapter, install_group_handler
 
         driver.register_adapter(GroupOnlyAdapter)
-        install_group_handler(Conversations(model, allowed_groups=qq_settings.allowed_groups))
+        queue = install_group_handler(
+            Conversations(model, allowed_groups=qq_settings.allowed_groups)
+        )
         if report_settings:
             from fullish.release_report import DeploymentReporter, install_report_route
 
             install_report_route(
                 app, DeploymentReporter(report_settings, model), qq_settings, revision
             )
+
+    app.state.message_queue = queue
 
     def qq_connected() -> bool:
         return bool(qq_settings and qq_settings.app_id in nonebot.get_bots())
@@ -112,6 +117,8 @@ def create_app() -> FastAPI:
     async def mark_stopped() -> None:
         app.state.ready = False
         emit("service.stopping", revision=revision)
+        if queue:
+            await queue.close()
         if model:
             await model.close()
 
