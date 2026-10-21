@@ -288,7 +288,8 @@ def test_unsupported_tool_provider_falls_back_before_any_execution():
     def chat(request):
         payload = json.loads(request.content)
         requests.append(payload)
-        if len(requests) == 1:
+        if len(requests) <= 2:
+            assert "tools" in payload
             return httpx.Response(400, json={"error": "private-provider-body"})
         assert "tools" not in payload
         return response({"content": "这次暂时不能计算。"})
@@ -304,7 +305,8 @@ def test_unsupported_tool_provider_falls_back_before_any_execution():
         try:
             assert await model.reply([], addressed=True, context=CONTEXT)
             tools.invoke.assert_not_called()
-            assert len(requests) == 2
+            assert len(requests) == 3
+            assert requests[1]["model"] == requests[2]["model"] == "gpt-6-luna"
         finally:
             await model.close()
 

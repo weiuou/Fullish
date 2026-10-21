@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from fullish import __version__
 from fullish.conversation import Conversations
-from fullish.generation.gemini import GeminiImageGenerator
+from fullish.generation.openai import OpenAIImageGenerator
 from fullish.model import ChatModel
 from fullish.settings import (
     DeploymentReportSettings,
@@ -70,7 +70,7 @@ def create_app() -> FastAPI:
     tools = ToolRuntime(tool_settings) if tool_settings else None
     image_settings = ImageGenerationSettings.from_env() if model_settings else None
     image_generator = (
-        GeminiImageGenerator(model_settings, image_settings)
+        OpenAIImageGenerator(model_settings, image_settings)
         if model_settings and image_settings
         else None
     )
@@ -153,6 +153,7 @@ def create_app() -> FastAPI:
         return {
             "model_configured": model is not None,
             "model": model_settings.model if model_settings else "",
+            "fallback_model": model_settings.fallback_model if model_settings else "",
             "model_available": await model.available() if model else False,
             "qq_enabled": qq_settings is not None,
             "qq_connected": qq_connected(),

@@ -14,36 +14,19 @@ from test_sending import event
 
 from fullish.conversation import Conversations
 from fullish.generation import GeneratedImage
-from fullish.generation.gemini import GeminiImageGenerator, decode_image
+from fullish.generation.openai import OpenAIImageGenerator, decode_image
 from fullish.model import ChatModel, ModelError
-from fullish.qq import handle_group
+from fullish.qq import IMAGE_FAILURE_REPLY, IMAGE_RATE_LIMIT_REPLY, handle_group
 from fullish.sending import Image, OutgoingMessage, Text
 from fullish.settings import ImageGenerationSettings, ModelSettings, ToolSettings
 from fullish.tools import ToolContext, ToolRuntime
 
 PNG = b"\x89PNG\r\n\x1a\nsynthetic-generated-picture"
-MODEL = "gemini-3.1-flash-image"
+MODEL = "gpt-image-2.5"
 
 
-def image_response(*, body=PNG, mime="image/png"):
-    return {
-        "candidates": [
-            {
-                "finishReason": "STOP",
-                "content": {
-                    "parts": [
-                        {"thought": True, "text": "private-reasoning"},
-                        {
-                            "thought": True,
-                            "inlineData": {"mimeType": mime, "data": "interim-private"},
-                        },
-                        {"text": "图片配文"},
-                        {"inlineData": {"mimeType": mime, "data": base64.b64encode(body).decode()}},
-                    ]
-                },
-            }
-        ]
-    }
+def image_response(*, body=PNG):
+    return {"data": [{"b64_json": base64.b64encode(body).decode()}]}
 
 
 def tool_response(*, prompt="画一只橘猫", caption="给你画了只橘猫。", name="generate_image"):
@@ -69,35 +52,33 @@ def tool_response(*, prompt="画一只橘猫", caption="给你画了只橘猫。
 
 
 @pytest.mark.parametrize("prefix", ["", "/proxy"])
-def test_native_generation_reuses_key_discovers_and_caches_model(prefix):
+@pytest.mark.parametrize("configured", ["gpt-image-2.5", "auto", "custom-image-alias"])
+def test_image_generation_reuses_cpa_connection_and_exact_model(prefix, configured):
     async def run():
         requests = []
+        selected = MODEL if configured == "auto" else configured
 
         def respond(request):
             requests.append(request)
             assert request.headers["Authorization"] == "Bearer shared-private-key"
-            if request.url.path == prefix + "/v1/models":
-                return httpx.Response(
-                    200,
-                    json={"data": [{"id": "gemini-chat"}, {"id": "gpt-image-1"}, {"id": MODEL}]},
-                )
-            assert request.url.path == prefix + f"/v1beta/models/{MODEL}:generateContent"
-            data = json.loads(request.content)
-            assert data["contents"] == [{"role": "user", "parts": [{"text": "画一只橘猫"}]}]
-            assert data["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
-            assert data["generationConfig"]["candidateCount"] == 1
+            assert request.method == "POST"
+            assert request.url.path == prefix + "/v1/images/generations"
+            assert json.loads(request.content) == {
+                "model": selected,
+                "prompt": "画一只橘猫",
+                "n": 1,
+            }
             return httpx.Response(200, json=image_response())
 
-        generator = GeminiImageGenerator(
+        generator = OpenAIImageGenerator(
             ModelSettings("http://localhost" + prefix + "/v1", "shared-private-key"),
-            ImageGenerationSettings(),
+            ImageGenerationSettings(configured),
             transport=httpx.MockTransport(respond),
         )
         try:
             results = await asyncio.gather(*(generator.generate("画一只橘猫") for _ in range(2)))
-            assert all(result.image == PNG and result.text == "图片配文" for result in results)
-            assert sum(request.method == "GET" for request in requests) == 1
-            assert len(requests) == 3
+            assert all(result.image == PNG and result.text == "" for result in results)
+            assert len(requests) == 2
             assert "private" not in repr(results)
         finally:
             await generator.close()
@@ -106,98 +87,23 @@ def test_native_generation_reuses_key_discovers_and_caches_model(prefix):
     asyncio.run(run())
 
 
-def test_explicit_model_uses_native_api_without_catalog_dependency():
-    async def run():
-        def respond(request):
-            assert request.method == "POST"
-            assert request.url.path == "/v1beta/models/custom-image-alias:generateContent"
-            return httpx.Response(200, json=image_response())
-
-        generator = GeminiImageGenerator(
-            ModelSettings("http://localhost/v1", "key"),
-            ImageGenerationSettings("custom-image-alias"),
-            transport=httpx.MockTransport(respond),
-        )
-        try:
-            assert (await generator.generate("画只猫")).image == PNG
-        finally:
-            await generator.close()
-
-    asyncio.run(run())
-
-
-@pytest.mark.parametrize(
-    "payload, code",
-    [
-        ({"data": [{"id": "gemini-chat"}, {"id": "gpt-image-1"}]}, "image_model_unavailable"),
-        ({"data": [None, {}, {"id": 5}, {"id": "gemini-image?secret"}]}, "image_model_unavailable"),
-        ({"data": None}, "image_invalid_catalog"),
-    ],
-)
-def test_unavailable_image_models_do_not_make_generation_calls(payload, code):
-    async def run():
-        def respond(request):
-            assert request.method == "GET"
-            return httpx.Response(200, json=payload)
-
-        generator = GeminiImageGenerator(
-            ModelSettings("http://localhost/v1", "key"),
-            ImageGenerationSettings(),
-            transport=httpx.MockTransport(respond),
-        )
-        try:
-            with pytest.raises(ModelError, match=f"^{code}$"):
-                await generator.generate("画只猫")
-        finally:
-            await generator.close()
-
-    asyncio.run(run())
-
-
 @pytest.mark.parametrize(
     "payload, code",
     [
         ({}, "image_missing"),
-        ({"promptFeedback": {"blockReason": "SAFETY"}}, "image_blocked"),
-        ({"candidates": [{"finishReason": "SAFETY"}]}, "image_incomplete_or_blocked"),
-        ({"candidates": [{"finishReason": "MAX_TOKENS"}]}, "image_incomplete_or_blocked"),
-        (
-            {"candidates": [{"content": {"parts": [{"text": "upstream-private-body"}]}}]},
-            "image_missing",
-        ),
-        ({"candidates": [{"content": {"parts": [None]}}]}, "image_invalid_response"),
+        ({"data": []}, "image_missing"),
+        ({"data": "invalid"}, "image_invalid_response"),
+        ({"data": [None]}, "image_invalid_response"),
+        ({"data": [{"url": "https://private.example/image"}]}, "image_missing"),
+        ({"data": [{"b64_json": "private-invalid"}]}, "image_invalid_response"),
+        ({"data": [{"b64_json": 123}]}, "image_data_invalid_or_too_large"),
+        ({"data": [{"b64_json": "x"}, {"b64_json": "y"}]}, "image_multiple_outputs"),
         (image_response(body=b"<html>not an image</html>"), "image_invalid_format"),
-        (image_response(mime="image/jpeg"), "image_invalid_format"),
     ],
 )
 def test_generated_payload_validation(payload, code):
     with pytest.raises(ModelError, match=f"^{code}$"):
         decode_image(payload)
-
-
-def test_no_interim_images_multiple_images_or_invalid_base64():
-    payload = image_response()
-    parts = payload["candidates"][0]["content"]["parts"]
-    parts.pop()
-    with pytest.raises(ModelError, match="^image_missing$"):
-        decode_image(payload)
-    payload = image_response()
-    parts = payload["candidates"][0]["content"]["parts"]
-    parts.append(parts[-1])
-    with pytest.raises(ModelError, match="^image_multiple_outputs$"):
-        decode_image(payload)
-    payload = image_response()
-    payload["candidates"][0]["content"]["parts"][-1]["inlineData"]["data"] = "invalid-private"
-    with pytest.raises(ModelError, match="^image_invalid_response$"):
-        decode_image(payload)
-
-
-def test_snake_case_inline_data_is_supported():
-    payload = image_response()
-    payload["candidates"][0]["content"]["parts"] = [
-        {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(PNG).decode()}}
-    ]
-    assert decode_image(payload).image == PNG
 
 
 @pytest.mark.parametrize("case", ["http", "redirect", "invalid_json", "oversize", "timeout"])
@@ -215,7 +121,7 @@ def test_generation_failures_are_bounded_and_redacted(monkeypatch, case):
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-        monkeypatch.setattr("fullish.generation.gemini.MAX_RESPONSE_BYTES", 64)
+        monkeypatch.setattr("fullish.generation.openai.MAX_RESPONSE_BYTES", 64)
         records = []
 
         def collect(message):
@@ -223,7 +129,7 @@ def test_generation_failures_are_bounded_and_redacted(monkeypatch, case):
                 records.append(record)
 
         sink = logger.add(collect)
-        generator = GeminiImageGenerator(
+        generator = OpenAIImageGenerator(
             ModelSettings("http://localhost/v1", "upstream-private-key"),
             ImageGenerationSettings(MODEL, timeout=0.02),
             transport=httpx.MockTransport(respond),
@@ -250,12 +156,12 @@ def test_generation_failures_are_bounded_and_redacted(monkeypatch, case):
 
 
 def test_decoded_image_size_limit(monkeypatch):
-    monkeypatch.setattr("fullish.generation.gemini.MAX_GENERATED_IMAGE_BYTES", 16)
+    monkeypatch.setattr("fullish.generation.openai.MAX_GENERATED_IMAGE_BYTES", 16)
     with pytest.raises(ModelError, match="^image_data_invalid_or_too_large$"):
         decode_image(image_response())
 
 
-def test_native_generation_cancellation_propagates():
+def test_generation_cancellation_propagates():
     async def run():
         started = asyncio.Event()
 
@@ -264,7 +170,7 @@ def test_native_generation_cancellation_propagates():
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-        generator = GeminiImageGenerator(
+        generator = OpenAIImageGenerator(
             ModelSettings("http://localhost/v1", "key"),
             ImageGenerationSettings(MODEL),
             transport=httpx.MockTransport(respond),
@@ -301,11 +207,11 @@ def test_tool_generation_delivers_text_and_generated_bytes_through_real_qq_sende
                 return httpx.Response(200, json=tool_response())
             if request.url.path == "/v1/models":
                 return httpx.Response(200, json={"data": [{"id": MODEL}]})
-            assert request.url.path == f"/v1beta/models/{MODEL}:generateContent"
+            assert request.url.path == "/v1/images/generations"
             return httpx.Response(200, json=image_response())
 
         connection = ModelSettings("http://localhost/v1", "shared-key")
-        generator = GeminiImageGenerator(
+        generator = OpenAIImageGenerator(
             connection, ImageGenerationSettings(), transport=httpx.MockTransport(respond)
         )
         model = ChatModel(
@@ -333,8 +239,7 @@ def test_tool_generation_delivers_text_and_generated_bytes_through_real_qq_sende
                 assert sent["media"].file_info == "generated-handle"
                 assert requests == [
                     "/v1/chat/completions",
-                    "/v1/models",
-                    f"/v1beta/models/{MODEL}:generateContent",
+                    "/v1/images/generations",
                 ]
                 assert conversations.groups["g"].turns[-1]["content"] == "给你画了只橘猫。[图片]"
             finally:
@@ -488,10 +393,11 @@ def test_reply_model_can_choose_image_text_or_silence_without_addressed_gate(cho
     asyncio.run(run())
 
 
-def test_generation_failure_sends_nothing_and_releases_conversation_lock():
+@pytest.mark.parametrize("code", ["image_http_429", "image_connection_or_timeout", "image_missing"])
+def test_generation_failure_sends_text_acknowledgement_and_releases_conversation_lock(code):
     async def run():
         generator = Mock()
-        generator.generate = AsyncMock(side_effect=ModelError("image_http_429"))
+        generator.generate = AsyncMock(side_effect=ModelError(code))
         generator.close = AsyncMock()
         model = ChatModel(
             ModelSettings("http://localhost/v1", "key"),
@@ -503,9 +409,13 @@ def test_generation_failure_sends_nothing_and_releases_conversation_lock():
         bot.send = AsyncMock()
         try:
             await handle_group(conversations, bot, event())
-            bot.send.assert_not_awaited()
+            bot.send.assert_awaited_once()
+            expected = IMAGE_RATE_LIMIT_REPLY if code == "image_http_429" else IMAGE_FAILURE_REPLY
+            assert str(bot.send.call_args.args[1]) == expected
             group = conversations.groups["g"]
-            assert all(turn["role"] == "user" for turn in group.turns)
+            assert group.turns[-1]["role"] == "assistant"
+            assert group.turns[-1]["content"] == expected
+            assert "[图片]" not in group.turns[-1]["content"]
             assert not group.lock.locked()
             assert conversations.active == 0
         finally:
