@@ -65,6 +65,10 @@ case "${1:-}" in
         inspect_container "$3"
         ;;
     exec)
+        if [[ ${4:-} == -m && ${5:-} == fullish.sandbox_check ]]; then
+            [[ ! -f $state/sandbox-postflight-fails ]] || exit 1
+            exit 0
+        fi
         [[ -f $FULLISH_ROOT/state/release.env ]] || exit 2
         grep -qx "CURRENT_IMAGE=$FULLISH_IMAGE" "$FULLISH_ROOT/state/release.env" || exit 2
         [[ $(< "$state/container-health") == healthy ]] || exit 2
@@ -80,6 +84,7 @@ case "${1:-}" in
         shift
         case "$action" in
             config) [[ ${1:-} == --quiet ]] || exit 2 ;;
+            run) [[ ! -f $state/sandbox-preflight-fails ]] || exit 1 ;;
             ps)
                 if [[ -f $state/container-image ]]; then
                     if [[ " $* " == *' --all '* || $(< "$state/container-running") == true ]]; then
@@ -397,6 +402,37 @@ run_deploy --rollback
 assert_success
 assert_state "$image_a" "$image_b"
 grep -q -- "--previous $(printf '%040d' 2) --current $(printf '%040d' 1) --rollback" "$FAKE_DOCKER_STATE/report-calls.log" || fail 'rollback report used the wrong direction'
+pass
+
+new_case sandbox_preflight_failure_keeps_healthy_sender
+seed_release "$image_a"
+printf 'SANDBOX_SOCKET=/run/fullish-sandbox/api.sock\n' > "$FULLISH_ROOT/runtime.env"
+touch "$FAKE_DOCKER_STATE/sandbox-preflight-fails"
+run_deploy "$image_b"
+assert_failure
+assert_state "$image_a" ''
+assert_running "$image_a"
+assert_no_stop
+pass
+
+new_case sandbox_postflight_failure_does_not_commit_release
+seed_release "$image_a"
+printf 'SANDBOX_SOCKET=/run/fullish-sandbox/api.sock\n' > "$FULLISH_ROOT/runtime.env"
+touch "$FAKE_DOCKER_STATE/sandbox-postflight-fails"
+run_deploy "$image_b"
+assert_failure
+assert_state "$image_a" ''
+assert_running "$image_a"
+[[ ! -f $FAKE_DOCKER_STATE/report-calls.log ]] || fail 'failed sandbox release reported success'
+pass
+
+new_case accepted_sandbox_commits_release
+seed_release "$image_a"
+printf 'SANDBOX_SOCKET=/run/fullish-sandbox/api.sock\n' > "$FULLISH_ROOT/runtime.env"
+run_deploy "$image_b"
+assert_success
+assert_state "$image_b" "$image_a"
+assert_running "$image_b"
 pass
 
 printf 'All %s deployment transaction scenarios passed.\n' "$case_count"

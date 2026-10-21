@@ -106,6 +106,14 @@ jobs:
         run: |
           docker build -f deploy/Dockerfile.sandbox -t fullish-sandbox:ci .
           python3 scripts/sandbox-smoke.py --worker-image fullish-sandbox:ci
+      - name: Install rootless sandbox test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uidmap dbus-user-session slirp4netns
+          command -v dockerd-rootless-setuptool.sh
+          command -v rootlesskit
+      - name: Verify real rootless gVisor, host limits and deployment socket
+        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci
       - name: Export the verified image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker save --output fullish-image.tar fullish:ci
