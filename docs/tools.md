@@ -8,7 +8,7 @@ Fullish 在被 @ 或被名称叫到时，可以使用 `web_search`、`web_fetch`
 - 群、成员和消息 ID 从当前 QQ 事件生成，不读取模型参数或历史中的身份声明。工具只对 `TOOLS_ALLOWED_GROUPS` 中的群开放。
 - 首版所有获准群成员可使用相同的低权限工具，没有生产管理、跨群访问、密钥读取或权限提升入口。沙箱内文件属于群公共资料，同一群内不提供成员之间的文件保密。
 - 全局、每群、每位成员每分钟分别最多 60、20、6 次调用；单次搜索最多五个结果。限制只在当前进程内计数，重启会重置，不是账户级计费上限。
-- 工具输出和网页仅作为资料，不能授予权限。日志只记工具名、结果状态和成员散列，不记命令、输出、查询或凭证。
+- 工具输出和网页仅作为资料，不能授予权限。运行日志记录调用关联 ID、耗时、结果条数、错误码及详细记录是否保存成功；网页查询和返回内容保存在独立的私有记录中，详见下文。沙箱命令和输出不保存。
 - 暂时只返回文本结果。生成文件可留在群工作区，尚未实现 QQ 产物上传、语音转写或附件自动导入。不要把私密文件送入这个公共环境。
 
 ## DeepSeek 搜索
@@ -23,6 +23,30 @@ DEEPSEEK_API_KEY=<仅在服务器填写>
 使用官方独立 [Search / Fetch API](https://api-docs.deepseek.com/guides/search/)，不改变聊天模型。搜索凭证只发送到固定的 `https://api.deepseek.com/v1/tools/`，不发送到结果网站或沙箱。Fetch 拒绝带凭证、非标准端口、内网 IP 及解析到内网地址的 URL；实际网页和重定向由 DeepSeek 获取，机器人不带这个密钥直接访问网页。
 
 缺少密钥时不注册网页工具。密钥不写到 GitHub、镜像或模型提示词里。配置修改需通过正常部署重新创建机器人容器。
+
+## 回查搜索与网页结果
+
+每次通过校验的 `web_search` / `web_fetch` 调用会保存一条 SQLite 记录：包含查询词或网页 URL、实际返回给模型的搜索结果（标题、链接、摘要、日期）或网页正文，以及调用时间、版本、`trace_id`、工具调用 ID、群和成员摘要、耗时、错误码。保存的是客户端限长处理后的模型可见结果，不是供应商原始响应，也不保存整段群聊、模型密钥或 HTTP 请求头。
+
+`tool.started` 和 `tool.completed` 通过 `invocation_id` 关联同一次调用。`tool.completed` 中的 `audit_id` 用于查详细记录，`audit_saved=true` 表示已成功落盘；保存失败会记录 `tool.audit.failed`，不会改变工具返回值。`result_count=0` 表示搜索完成但没有结果，不能当作找到了依据；`error_code` 表示校验、限流或网络等失败原因。只有 `tool.completed` 不能证明模型已验证最终答案。
+
+详细内容不会写入普通 Docker 日志。已配置的服务密钥、常见密钥字段、Bearer token 和 URL 中的认证参数会被脱敏，URL 的用户密码及片段会移除；`snapshot_redacted` 标明内容是否变化。这不是任意秘密识别器，查询和公开网页仍可能包含敏感资料，应只由维护者查看，不转发到群里或公开 Issue。两类工具以外的内容、被拒绝的原始参数和供应商错误正文都不保存。
+
+默认最多保留最近 1000 条、7 天内的记录；每次写入时清理过期和超量记录，空闲期间不会主动执行清理。单条详细 JSON 上限 96000 字节，超限会明确设置 `snapshot_truncated=true` 并保留预览；供应商正文原有的截断标记也会保留。记录文件创建为 `0600`，新目录为 `0700`（实际访问仍受系统及卷权限控制）。
+
+Compose 将数据库保存在独立的 `fullish_tool-audit` 卷中，路径为 `/var/lib/fullish/tool-audit/audit.sqlite3`，更新、回滚或重建机器人容器会保留记录。不要对该部署运行 `docker compose down -v`，它会删除卷。本地运行默认写 `.state/tool-audit.sqlite3`，可用 `TOOL_AUDIT_PATH` 指定其他路径。
+
+在服务器上，先从日志找到目标消息的 `trace_id`，再查询其搜索与读取结果：
+
+```sh
+sudo docker exec fullish-bot-1 python -m fullish.tool_audit --trace-id 填入trace_id
+# 只查看其中一次调用；也可不带过滤参数查看最近 20 条。
+sudo docker exec fullish-bot-1 python -m fullish.tool_audit --audit-id 填入audit_id
+```
+
+命令按时间顺序输出 JSON 行，`snapshot.request` 是查询，`snapshot.response` 是工具交给模型的结果。可用 `--limit 1..100` 限制条数，`--path` 查看指定数据库；查询以只读方式打开，不会创建不存在的数据库。这个入口仅供服务器维护者使用，没有对外 HTTP 接口。
+
+已有部署需要先用新版本的 `scripts/server-setup.sh` 显式更新 Compose，再正常发布新镜像，以安装持久卷挂载；仅更新应用镜像不足以获得这个挂载。容器会继续聊天，但存储不可写时 `audit_saved=false` 并发出告警。启用前的调用没有保存详细结果，无法事后补回。
 
 ## 常驻环境
 

@@ -29,7 +29,8 @@ ENV APP_REVISION=$APP_REVISION \
     PATH="/app/.venv/bin:$PATH"
 
 RUN groupadd --gid 10001 fullish \
-    && useradd --uid 10001 --gid fullish --no-create-home --home-dir /tmp fullish
+    && useradd --uid 10001 --gid fullish --no-create-home --home-dir /tmp fullish \
+    && install -d -m 700 -o 10001 -g 10001 /var/lib/fullish/tool-audit
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 USER 10001:10001

@@ -8,12 +8,15 @@ services:
     env_file:
       - path: ./runtime.env
         format: raw
+    environment:
+      TOOL_AUDIT_PATH: /var/lib/fullish/tool-audit/audit.sqlite3
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
       - ./cpa:/run/fullish-cpa:ro
       # Empty when sandbox tools are disabled. This is the broker socket, not Docker.
       - /run/fullish-sandbox:/run/fullish-sandbox:ro
+      - tool-audit:/var/lib/fullish/tool-audit
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
@@ -27,3 +30,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  tool-audit:
