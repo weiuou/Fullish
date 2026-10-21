@@ -2,15 +2,21 @@
 
 import asyncio
 import json
+import os
+import sqlite3
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TypedDict
+from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from fullish.settings import ToolSettings
-from fullish.telemetry import emit, reference
+from fullish.telemetry import elapsed_ms, emit, reference, trace_id
+from fullish.tool_audit import ToolAudit
 from fullish.tools.web import DeepSeekWeb, ToolError
 
 
@@ -19,6 +25,12 @@ class ToolContext:
     group_id: str
     sender_id: str
     message_id: str
+
+
+class ToolMetrics(TypedDict, total=False):
+    result_count: int
+    content_chars: int
+    truncated: bool
 
 
 class SearchArgs(BaseModel):
@@ -50,8 +62,27 @@ DEFINITIONS = {
 
 
 class ToolRuntime:
-    def __init__(self, settings: ToolSettings, *, web_transport=None, sandbox_transport=None):
+    def __init__(
+        self,
+        settings: ToolSettings,
+        *,
+        web_transport=None,
+        sandbox_transport=None,
+        audit: ToolAudit | None = None,
+    ):
         self.settings = settings
+        self.audit = (
+            audit
+            if audit is not None
+            else ToolAudit(
+                secrets=(
+                    settings.deepseek_key,
+                    settings.sandbox_token,
+                    os.environ.get("AI_API_KEY", ""),
+                    os.environ.get("QQ_APP_SECRET", ""),
+                )
+            )
+        )
         self.web = (
             DeepSeekWeb(settings.deepseek_key, transport=web_transport)
             if settings.deepseek_key
@@ -123,8 +154,22 @@ class ToolRuntime:
         while len(self.usage) > 1024:
             self.usage.popitem(last=False)
 
-    async def invoke(self, name: str, raw: str, context: ToolContext) -> str:
-        outcome = "failed"
+    async def invoke(self, name: str, raw: str, context: ToolContext, *, call_id: str = "") -> str:
+        start = time.monotonic()
+        outcome = "cancelled"
+        code = ""
+        arguments = None
+        result: dict = {}
+        metrics: ToolMetrics = {}
+        invocation_id = uuid4().hex
+        fields = {
+            "tool": name if name in DEFINITIONS else "unknown",
+            "invocation_id": invocation_id,
+            # A provider ID is untrusted metadata, so expose only its fingerprint in logs.
+            "tool_call_ref": reference(call_id) if call_id else "",
+            "sender_ref": reference(context.sender_id),
+        }
+        emit("tool.started", **fields)
         try:
             if not self.allowed(context):
                 raise ToolError("tools_not_allowed")
@@ -162,18 +207,69 @@ class ToolRuntime:
                 else:
                     raise ToolError("tool_not_available")
             outcome = "completed"
-            return json.dumps({"ok": True, "data": data}, ensure_ascii=False)
+            result = {"ok": True, "data": data}
+            if name == "web_search":
+                metrics["result_count"] = len(data["results"])
+            elif name == "web_fetch":
+                metrics.update(content_chars=len(data["content"]), truncated=data["truncated"])
         except ToolError as error:
             code = str(error)
         except (httpx.HTTPError, TimeoutError):
             code = "tool_unavailable_or_timeout"
         except (ValueError, TypeError):
             code = "invalid_tool_response"
+        except asyncio.CancelledError:
+            code = "tool_cancelled"
+            raise
+        except Exception:
+            code = "unexpected_tool_error"
+            raise
         finally:
+            if code:
+                outcome = "cancelled" if code == "tool_cancelled" else "failed"
+                result = {"ok": False, "error": code}
+            audit_id = ""
+            audit_saved = False
+            duration = elapsed_ms(start)
+            # Only validated web requests/results are retained. Sandbox commands and
+            # output, rejected raw arguments and chat context never enter this store.
+            if name in {"web_search", "web_fetch"} and arguments is not None:
+                audit_id = invocation_id
+                record = {
+                    "audit_id": audit_id,
+                    "trace_id": trace_id(),
+                    "group_ref": reference(context.group_id),
+                    **fields,
+                    "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                    "revision": os.environ.get("APP_REVISION", "dev"),
+                    "outcome": outcome,
+                    "error_code": code,
+                    "elapsed_ms": duration,
+                    **metrics,
+                    "snapshot": {
+                        "tool_call_id": call_id,
+                        "request": arguments.model_dump(),
+                        "response": result if result else {"ok": False, "error": outcome},
+                    },
+                }
+                try:
+                    await asyncio.to_thread(self.audit.save, record)
+                    audit_saved = True
+                except (OSError, sqlite3.Error, ValueError, TypeError) as error:
+                    emit(
+                        "tool.audit.failed",
+                        level="WARNING",
+                        **fields,
+                        error_type=type(error).__name__,
+                    )
             emit(
                 "tool.completed",
-                tool=name if name in DEFINITIONS else "unknown",
+                **fields,
                 outcome=outcome,
-                sender_ref=reference(context.sender_id),
+                error_code=code,
+                elapsed_ms=duration,
+                audit_id=audit_id,
+                audit_saved=audit_saved,
+                **metrics,
             )
-        return json.dumps({"ok": False, "error": code})
+        return json.dumps(result, ensure_ascii=False)

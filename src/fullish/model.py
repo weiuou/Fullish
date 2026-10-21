@@ -276,7 +276,7 @@ class ChatModel:
                         for call in calls:
                             function = call["function"]
                             result = await self.tools.invoke(
-                                function["name"], function["arguments"], context
+                                function["name"], function["arguments"], context, call_id=call["id"]
                             )
                             payload.append(
                                 {"role": "tool", "tool_call_id": call["id"], "content": result}
