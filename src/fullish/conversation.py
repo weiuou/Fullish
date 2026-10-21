@@ -92,12 +92,17 @@ class Conversations:
             sender_ref=reference(message.sender.id),
             text_chars=len(text),
             image_count=len(images),
+            reply_image_count=len(message.reply.content.image_urls) if message.reply else 0,
             addressed=addressed,
         )
         if self.allowed_groups and group_id not in self.allowed_groups:
             emit("conversation.skipped", reason="group_not_allowed")
             return None
-        message = replace(message, content=message.content.limited(2000))
+        content = message.content.limited(2000)
+        reply = message.reply
+        if reply:
+            reply = replace(reply, content=reply.content.limited(2000 - len(content.text)))
+        message = replace(message, content=content, reply=reply)
         text = message.content.text
         # The adapter strips our mention. An empty remainder is still a valid call.
         if not text.strip():
@@ -148,24 +153,41 @@ class Conversations:
         async with group.lock:
             self.active += 1
             try:
-                # Only recent pictures are worth re-downloading; older ones stay as
-                # [图片] placeholders so context keeps its shape without extra cost.
+                # Explicit quotes get the picture budget first, including pictures
+                # whose original message was never received or has aged out.
                 history: list[ModelTurn] = []
-                remaining = MAX_IMAGES
+                selected: set[str] = set()
+
+                def select_images(urls: list[str]) -> list[str]:
+                    chosen = []
+                    for url in reversed(urls):
+                        if len(selected) >= MAX_IMAGES:
+                            break
+                        if url not in selected:
+                            selected.add(url)
+                            chosen.append(url)
+                    return chosen[::-1]
+
+                image_count = 0
                 for item in reversed(group.turns):
-                    recent = (
-                        item["images"][-remaining:]
-                        if remaining and now - item["created"] <= IMAGE_WINDOW_SECONDS
-                        else []
+                    source = item["message"]
+                    quote = source.reply if source else None
+                    recent = now - item["created"] <= IMAGE_WINDOW_SECONDS
+                    image_count += len(item["images"]) + (
+                        len(quote.content.image_urls) if quote else 0
                     )
-                    remaining -= len(recent)
                     model_turn: ModelTurn = {
                         "role": item["role"],
                         "content": item["content"],
-                        "images": recent,
                         "trace_id": item["trace_id"],
                     }
-                    if source := item["message"]:
+                    if quote:
+                        model_turn["reply"] = quote
+                        model_turn["reply_images"] = (
+                            select_images(quote.content.image_urls) if recent else []
+                        )
+                    model_turn["images"] = select_images(item["images"]) if recent else []
+                    if source:
                         model_turn["sender_id"] = source.sender.id
                         model_turn["sender_name"] = source.sender.display_name
                         model_turn["message_id"] = source.message_id
@@ -176,9 +198,8 @@ class Conversations:
                     trigger="mention" if addressed else "name",
                     history_turns=len(history),
                     context_trace_ids=[item["trace_id"] for item in group.turns],
-                    image_count=MAX_IMAGES - remaining,
-                    omitted_images=sum(len(item["images"]) for item in group.turns)
-                    - (MAX_IMAGES - remaining),
+                    image_count=len(selected),
+                    omitted_images=image_count - len(selected),
                 )
                 return await self.model.reply(history[::-1], addressed=called)
             finally:
@@ -194,11 +215,16 @@ class Conversations:
     @staticmethod
     def _trim(turns: deque[Turn]) -> None:
         # Bound body text as well as turn count; source metadata is retained separately.
-        total = sum(len(item["content"]) for item in turns)
+        def text_chars(item: Turn) -> int:
+            source = item["message"]
+            quote = source.reply if source else None
+            return len(item["content"]) + (len(quote.content.text) if quote else 0)
+
+        total = sum(text_chars(item) for item in turns)
         removed: list[str] = []
         while total > HISTORY_CHARS and len(turns) > 1:
             item = turns.popleft()
-            total -= len(item["content"])
+            total -= text_chars(item)
             removed.append(item["trace_id"])
         if removed:
             emit("context.trimmed", reason="character_budget", removed_trace_ids=removed)

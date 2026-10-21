@@ -48,6 +48,14 @@ class ParsedContent:
 
 
 @dataclass(frozen=True)
+class QuotedMessage:
+    content: ParsedContent
+    reference_id: str | None = None
+    sender_id: str | None = None
+    sender_name: str | None = None
+
+
+@dataclass(frozen=True)
 class CollectedMessage:
     group_id: str
     message_id: str
@@ -55,3 +63,4 @@ class CollectedMessage:
     content: ParsedContent
     addressed: bool
     sent_at: str | None = None
+    reply: QuotedMessage | None = None
