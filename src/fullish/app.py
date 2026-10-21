@@ -10,8 +10,15 @@ from fastapi.responses import JSONResponse
 
 from fullish import __version__
 from fullish.conversation import Conversations
+from fullish.generation.gemini import GeminiImageGenerator
 from fullish.model import ChatModel
-from fullish.settings import DeploymentReportSettings, ModelSettings, QQSettings, ToolSettings
+from fullish.settings import (
+    DeploymentReportSettings,
+    ImageGenerationSettings,
+    ModelSettings,
+    QQSettings,
+    ToolSettings,
+)
 from fullish.telemetry import emit
 
 
@@ -61,7 +68,17 @@ def create_app() -> FastAPI:
     from fullish.tools import ToolRuntime
 
     tools = ToolRuntime(tool_settings) if tool_settings else None
-    model = ChatModel(model_settings, tools=tools) if model_settings else None
+    image_settings = ImageGenerationSettings.from_env() if model_settings else None
+    image_generator = (
+        GeminiImageGenerator(model_settings, image_settings)
+        if model_settings and image_settings
+        else None
+    )
+    model = (
+        ChatModel(model_settings, tools=tools, image_generator=image_generator)
+        if model_settings
+        else None
+    )
     app.state.model = model
     if qq_settings and model:
         from fullish.qq import GroupOnlyAdapter, install_group_handler
@@ -132,6 +149,8 @@ def create_app() -> FastAPI:
             "model_available": await model.available() if model else False,
             "qq_enabled": qq_settings is not None,
             "qq_connected": qq_connected(),
+            "image_generation_enabled": image_generator is not None,
+            "image_model": image_settings.model if image_settings else "",
             "tools_enabled": tools is not None,
             "search_configured": bool(tool_settings and tool_settings.deepseek_key),
             "sandbox_configured": bool(tool_settings and tool_settings.sandbox_socket),

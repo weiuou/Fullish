@@ -4,11 +4,12 @@ import asyncio
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
-from typing import TypedDict
+from typing import Protocol, TypedDict
 
 from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
-from fullish.model import ChatModel
 from fullish.model import Turn as ModelTurn
+from fullish.sending import Reply
+from fullish.sending.schema import outgoing
 from fullish.telemetry import emit, message_trace, reference, trace_id
 from fullish.tools import ToolContext
 
@@ -17,6 +18,12 @@ HISTORY_CHARS = 6000
 GROUP_IDLE_SECONDS = 1800
 IMAGE_WINDOW_SECONDS = 150
 MAX_IMAGES = 4
+
+
+class ReplyModel(Protocol):
+    async def reply(
+        self, turns: list[ModelTurn], *, addressed: bool, context: ToolContext | None = None
+    ) -> Reply | None: ...
 
 
 class Turn(TypedDict):
@@ -55,7 +62,7 @@ class Group:
 
 
 class Conversations:
-    def __init__(self, model: ChatModel, *, allowed_groups: frozenset[str] = frozenset()):
+    def __init__(self, model: ReplyModel, *, allowed_groups: frozenset[str] = frozenset()):
         self.model = model
         self.allowed_groups = allowed_groups
         self.groups: OrderedDict[str, Group] = OrderedDict()
@@ -70,7 +77,7 @@ class Conversations:
         *,
         addressed: bool,
         images: list[str] | None = None,
-    ) -> str | None:
+    ) -> Reply | None:
         """Convenience entry for text-based replay and callers without an adapter."""
         parts = (MessagePart("text", text),) + tuple(
             MessagePart("image", "", {"url": url}, status="pending") for url in images or ()
@@ -79,11 +86,11 @@ class Conversations:
             CollectedMessage(group_id, message_id, Sender(sender), ParsedContent(parts), addressed)
         )
 
-    async def receive_message(self, message: CollectedMessage) -> str | None:
+    async def receive_message(self, message: CollectedMessage) -> Reply | None:
         with message_trace(message.group_id, message.message_id):
             return await self._receive(message)
 
-    async def _receive(self, message: CollectedMessage) -> str | None:
+    async def _receive(self, message: CollectedMessage) -> Reply | None:
         group_id, message_id = message.group_id, message.message_id
         text, images = message.content.text, message.content.image_urls
         addressed = message.addressed
@@ -210,10 +217,10 @@ class Conversations:
             finally:
                 self.active -= 1
 
-    def sent(self, group_id: str, text: str) -> None:
+    def sent(self, group_id: str, reply: Reply) -> None:
         # Record only replies that QQ accepted, not failed sends.
         if group := self.groups.get(group_id):
-            group.turns.append(turn("assistant", text))
+            group.turns.append(turn("assistant", outgoing(reply).context_text[:2000]))
             self._trim(group.turns)
             emit("context.recorded", role="assistant", history_turns=len(group.turns))
 

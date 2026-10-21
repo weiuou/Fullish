@@ -3,6 +3,7 @@
 import os
 import re
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -40,6 +41,31 @@ class ModelSettings:
         if not model:
             raise ValueError("AI_MODEL must not be empty")
         return cls(base, key, model, socket)
+
+
+@dataclass(frozen=True)
+class ImageGenerationSettings:
+    model: str = "auto"
+    timeout: float = 120
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_./-]+", self.model) or any(
+            part in {"", ".", ".."} for part in self.model.split("/")
+        ):
+            raise ValueError("AI_IMAGE_MODEL must be a model ID or auto")
+        if not isfinite(self.timeout) or not 0 < self.timeout <= 300:
+            raise ValueError("AI_IMAGE_TIMEOUT_SECONDS must be greater than 0 and at most 300")
+
+    @classmethod
+    def from_env(cls) -> Self | None:
+        model = os.environ.get("AI_IMAGE_MODEL", "auto").strip()
+        if model.lower() == "off":
+            return None
+        try:
+            timeout = float(os.environ.get("AI_IMAGE_TIMEOUT_SECONDS", "120"))
+        except ValueError:
+            raise ValueError("AI_IMAGE_TIMEOUT_SECONDS must be a number") from None
+        return cls(model, timeout)
 
 
 @dataclass(frozen=True)

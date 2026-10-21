@@ -12,6 +12,8 @@ from nonebot.adapters.qq.models import Dispatch
 from fullish.collection.qq import collect_group_message
 from fullish.conversation import Conversations
 from fullish.model import ModelError
+from fullish.sending.qq import send_reply
+from fullish.sending.schema import outgoing
 from fullish.telemetry import elapsed_ms, emit, message_trace
 
 
@@ -70,8 +72,14 @@ async def handle_group(
             if reply:
                 phase = "send"
                 send_start = time.monotonic()
-                emit("qq.send.started", text_chars=len(reply))
-                await bot.send(event, reply)
+                candidate = outgoing(reply)
+                emit(
+                    "qq.send.started",
+                    text_chars=len(candidate.text),
+                    image_count=sum(part.kind == "image" for part in candidate.parts),
+                    audio_count=sum(part.kind == "audio" for part in candidate.parts),
+                )
+                await send_reply(bot, event, candidate)
                 emit("qq.send.succeeded", elapsed_ms=elapsed_ms(send_start))
                 phase = "record"
                 conversations.sent(event.group_openid, reply)
