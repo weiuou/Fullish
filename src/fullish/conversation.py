@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol, TypedDict
 
 from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
+from fullish.control import GroupControl
 from fullish.model import Turn as ModelTurn
 from fullish.sending import Reply
 from fullish.sending.schema import outgoing
@@ -68,8 +69,10 @@ class Conversations:
         *,
         allowed_groups: frozenset[str] = frozenset(),
         min_interval: float = 5,
+        control: GroupControl | None = None,
     ):
         self.model = model
+        self.control = control
         self.allowed_groups = allowed_groups
         self.groups: OrderedDict[str, Group] = OrderedDict()
         self.active = 0
@@ -111,7 +114,12 @@ class Conversations:
             reply_image_count=len(message.reply.content.image_urls) if message.reply else 0,
             addressed=addressed,
         )
-        if self.allowed_groups and group_id not in self.allowed_groups:
+        if self.control:
+            try:
+                await asyncio.to_thread(self.control.observe, group_id)
+            except Exception as error:
+                emit("group.observation.failed", level="WARNING", error_type=type(error).__name__)
+        if not self.group_allowed(group_id):
             emit("conversation.skipped", reason="group_not_allowed")
             return None
         content = message.content.limited(2000)
@@ -168,6 +176,9 @@ class Conversations:
             group.last_attempt = time.monotonic()
             now = time.monotonic()
             try:
+                if not self.group_allowed(group_id):
+                    emit("conversation.skipped", reason="group_policy_changed")
+                    return None
                 # Explicit quotes get the picture budget first, including pictures
                 # whose original message was never received or has aged out.
                 history: list[ModelTurn] = []
@@ -231,6 +242,20 @@ class Conversations:
             finally:
                 self.active -= 1
                 self.capacity.release()
+
+    def group_allowed(self, group_id: str) -> bool:
+        if self.control:
+            return self.control.policies.features(group_id).chat
+        return not self.allowed_groups or group_id in self.allowed_groups
+
+    def reply_allowed(self, group_id: str, reply: Reply) -> bool:
+        if not self.group_allowed(group_id):
+            return False
+        return (
+            not self.control
+            or not any(part.kind == "image" for part in outgoing(reply).parts)
+            or self.control.policies.features(group_id).allows("image")
+        )
 
     def sent(self, group_id: str, reply: Reply) -> None:
         # Record only replies that QQ accepted, not failed sends.

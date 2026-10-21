@@ -9,7 +9,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from fullish import __version__
+from fullish.control import GroupControl
 from fullish.conversation import Conversations
+from fullish.developer_menu import DeveloperMenu
 from fullish.generation.openai import OpenAIImageGenerator
 from fullish.model import ChatModel
 from fullish.settings import (
@@ -67,7 +69,9 @@ def create_app() -> FastAPI:
     mode = "qq" if qq_settings else "ai_configured" if model_settings else "foundation"
     from fullish.tools import ToolRuntime
 
-    tools = ToolRuntime(tool_settings) if tool_settings else None
+    control = GroupControl.from_env() if qq_settings else None
+    policies = control.policies if control else None
+    tools = ToolRuntime(tool_settings, policies=policies) if tool_settings else None
     image_settings = ImageGenerationSettings.from_env() if model_settings else None
     image_generator = (
         OpenAIImageGenerator(model_settings, image_settings)
@@ -75,18 +79,20 @@ def create_app() -> FastAPI:
         else None
     )
     model = (
-        ChatModel(model_settings, tools=tools, image_generator=image_generator)
+        ChatModel(model_settings, tools=tools, image_generator=image_generator, policies=policies)
         if model_settings
         else None
     )
     app.state.model = model
+    app.state.group_control = control
     queue = None
     if qq_settings and model:
         from fullish.qq import GroupOnlyAdapter, install_group_handler
 
         driver.register_adapter(GroupOnlyAdapter)
         queue = install_group_handler(
-            Conversations(model, allowed_groups=qq_settings.allowed_groups)
+            Conversations(model, allowed_groups=qq_settings.allowed_groups, control=control),
+            developer=DeveloperMenu(control) if control else None,
         )
         if report_settings:
             from fullish.release_report import DeploymentReporter, install_report_route
@@ -162,6 +168,7 @@ def create_app() -> FastAPI:
             "tools_enabled": tools is not None,
             "search_configured": bool(tool_settings and tool_settings.deepseek_key),
             "sandbox_configured": bool(tool_settings and tool_settings.sandbox_socket),
+            "developer_menu_enabled": control is not None,
         }
 
     return app

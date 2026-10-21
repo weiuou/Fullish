@@ -13,10 +13,18 @@ import re
 import selectors
 import socketserver
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
+
+if __package__:
+    from fullish.group_policy import GroupPolicies
+else:
+    # The standalone service uses -I; load only its root-owned sibling module.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from group_policy import GroupPolicies  # pyright: ignore[reportMissingImports]
 
 WORKER = "/opt/fullish/worker.py"
 WORKSPACE_OPTIONS = "rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=700"
@@ -31,20 +39,50 @@ class Sandboxes:
     def __init__(self):
         self.image = os.environ.get("SANDBOX_IMAGE", "")
         self.token = os.environ.get("SANDBOX_TOKEN", "")
-        self.groups = frozenset(
+        self.legacy_groups = frozenset(
             x.strip() for x in os.environ.get("TOOLS_ALLOWED_GROUPS", "").split(",") if x.strip()
         )
         self.docker_host = os.environ.get("SANDBOX_DOCKER_HOST", "")
+        self.policies = GroupPolicies.from_env()
+        if self.policies:
+            self.policies.read()
         if (
             not re.fullmatch(r"(?:[a-z0-9./:_-]+@)?sha256:[a-f0-9]{64}", self.image)
             or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", self.token)
-            or not 1 <= len(self.groups) <= 2
+            or (not self.policies and not 1 <= len(self.groups) <= 2)
             or any(not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", g) for g in self.groups)
             or not self.docker_host.startswith("unix:///run/user/")
         ):
             raise ValueError("invalid_broker_configuration")
         self.lock = threading.Lock()
         self.image_env: list[str] | None = None
+
+    @property
+    def groups(self) -> frozenset[str]:
+        return self.policies.sandbox_groups() if self.policies else self.legacy_groups
+
+    def reconcile(self) -> None:
+        if not self.policies:
+            return
+        # Destructive reconciliation requires a valid snapshot, not a fail-closed
+        # empty allowlist caused by a damaged or unavailable policy file.
+        keep = {self.name(group) for group in self.policies.require_sandbox_groups()}
+        names = self.docker(
+            [
+                "container",
+                "ls",
+                "--all",
+                "--filter",
+                "name=fullish-sandbox-",
+                "--format",
+                "{{.Names}}",
+            ]
+        )
+        for name in names.splitlines():
+            if re.fullmatch(r"fullish-sandbox-[a-f0-9]{24}", name) and name not in keep:
+                # This prefix is reserved in the dedicated rootless daemon. Reclaim
+                # disabled workspaces before allocating another of the two slots.
+                self.docker(["rm", "--force", name])
 
     def docker(self, arguments: list[str], *, data: str | None = None, timeout: int = 10) -> str:
         # Never inherit credentials, DOCKER_CONTEXT or arbitrary CLI plugin configuration.
@@ -254,7 +292,10 @@ class Sandboxes:
         name = ""
         broken = True
         try:
+            if data["group_id"] not in self.groups:
+                raise SandboxError("invalid_or_unauthorized_request")
             self.check_runtime()
+            self.reconcile()
             name = self.ensure(data["group_id"])
             # Clear leftovers after broker restart as well as after every command.
             self.docker(["exec", name, "python3", "-I", WORKER, "--cleanup"])
@@ -358,6 +399,7 @@ def main() -> None:
         raise RuntimeError("linux_required")
     sandboxes = Sandboxes()
     sandboxes.check_runtime()
+    sandboxes.reconcile()
     for group in sandboxes.groups:
         name = sandboxes.ensure(group)  # Reuse across commands and bot deploys.
         sandboxes.docker(["exec", name, "python3", "-I", WORKER, "--cleanup"])

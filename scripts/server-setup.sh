@@ -11,7 +11,7 @@ repository=$1
 
 root=/opt/fullish
 source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-for tool in docker flock timeout install; do
+for tool in docker flock timeout install python3; do
     command -v "$tool" >/dev/null || die "Required command missing: $tool"
 done
 docker info >/dev/null
@@ -25,6 +25,10 @@ if [[ -f $root/image-repository ]]; then
 fi
 
 install -d -m 700 "$root" "$root/bin" "$root/state"
+install -d -m 750 /var/lib/fullish-control
+# Older install implementations resolve numeric owners as account names. The bot
+# UID does not need a matching host login; use numeric chown through Python.
+python3 -c 'import os; os.chown("/var/lib/fullish-control", 10001, 10001)'
 exec 9>"$root/.deploy.lock"
 flock -n 9 || die 'A deployment is running. Try setup again after it finishes.'
 staging="$root/setup-staging.$$"

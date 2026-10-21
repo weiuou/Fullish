@@ -5,6 +5,7 @@ import json
 import sys
 import uuid
 
+from fullish.control import GroupControl
 from fullish.settings import ToolSettings
 from fullish.tools import ToolContext, ToolRuntime
 
@@ -14,10 +15,15 @@ async def check() -> None:
     if not settings or not settings.sandbox_socket:
         print("Sandbox disabled; no sandbox dependency required.")
         return
-    tools = ToolRuntime(settings)
+    control = GroupControl.from_env()
+    policies = control.policies if control else None
+    tools = ToolRuntime(settings, policies=policies)
     try:
         # Synthetic identity, no model invocation, no QQ send and no workspace writes.
-        for group in sorted(settings.allowed_groups):
+        groups = policies.sandbox_groups() if policies else settings.allowed_groups
+        if policies:
+            policies.read()  # A damaged policy must fail deployment, not skip acceptance.
+        for group in sorted(groups):
             result = json.loads(
                 await tools.invoke(
                     "sandbox_exec",

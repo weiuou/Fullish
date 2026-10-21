@@ -14,6 +14,7 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from fullish.group_policy import GroupPolicies
 from fullish.settings import ToolSettings
 from fullish.telemetry import elapsed_ms, emit, reference, trace_id
 from fullish.tool_audit import ToolAudit
@@ -69,8 +70,10 @@ class ToolRuntime:
         web_transport=None,
         sandbox_transport=None,
         audit: ToolAudit | None = None,
+        policies: GroupPolicies | None = None,
     ):
         self.settings = settings
+        self.policies = policies
         self.audit = (
             audit
             if audit is not None
@@ -112,7 +115,11 @@ class ToolRuntime:
     def allowed(self, context: ToolContext | None) -> bool:
         return bool(
             context
-            and context.group_id in self.settings.allowed_groups
+            and (
+                self.policies.features(context.group_id).chat
+                if self.policies and context
+                else context.group_id in self.settings.allowed_groups
+            )
             and context.sender_id
             and context.message_id
         )
@@ -120,8 +127,15 @@ class ToolRuntime:
     def schemas(self, context: ToolContext | None) -> list[dict]:
         if not self.allowed(context):
             return []
-        names = (["web_search", "web_fetch"] if self.web else []) + (
-            ["sandbox_exec"] if self.sandbox else []
+        features = self.policies.features(context.group_id) if self.policies and context else None
+        names = (
+            ["web_search", "web_fetch"]
+            if self.web and (features is None or features.allows("search"))
+            else []
+        ) + (
+            ["sandbox_exec"]
+            if self.sandbox and (features is None or features.allows("sandbox"))
+            else []
         )
         return [
             {
