@@ -71,7 +71,9 @@ def test_tool_limit_reserves_one_tools_free_final_attempt(ending):
             result = await model.reply([], addressed=True, context=context)
             assert result == ("只能确认已完成的部分。" if ending == "text" else INCOMPLETE_REPLY)
             assert runtime.invoke.await_count == MAX_TOOL_CALLS
-            assert len(posted) == 2
+            assert len(posted) == (2 if ending == "text" else 3)
+            if ending != "text":
+                assert posted[-1]["model"] == "gpt-6-luna"
         finally:
             await model.close()
 

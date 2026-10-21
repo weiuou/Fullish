@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from fullish.errors import ModelError
-from fullish.generation.gemini import GeminiImageGenerator
+from fullish.generation.openai import OpenAIImageGenerator
 from fullish.media import sniff_image_type
 from fullish.settings import ImageGenerationSettings, ModelSettings
 
@@ -19,7 +19,7 @@ async def check(*, generate: bool = False, output: Path | None = None) -> None:
         raise SystemExit("Configure AI_BASE_URL and AI_API_KEY first")
     if settings is None:
         raise SystemExit("Image generation is disabled by AI_IMAGE_MODEL=off")
-    generator = GeminiImageGenerator(connection, settings)
+    generator = OpenAIImageGenerator(connection, settings)
     try:
         model = await generator.select_model()
         result: dict[str, object] = {"model": model}

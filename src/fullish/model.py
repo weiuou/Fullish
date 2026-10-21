@@ -4,7 +4,8 @@ import asyncio
 import base64
 import json
 import time
-from typing import NotRequired, TypedDict
+from dataclasses import dataclass
+from typing import NotRequired, TypedDict, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -92,6 +93,12 @@ class Turn(TypedDict):
     sent_at: NotRequired[str | None]
     reply: NotRequired[QuotedMessage]
     reply_images: NotRequired[list[str]]
+
+
+@dataclass
+class _ChatSession:
+    model: str
+    used_fallback: bool = False
 
 
 class ChatModel:
@@ -241,6 +248,7 @@ class ChatModel:
         # Reserve a final, tools-free answer inside the original total chat deadline.
         deadline = time.monotonic() + self.settings.timeout
         reserve = min(FINAL_ANSWER_SECONDS, self.settings.timeout / 3)
+        session = _ChatSession(self.settings.model)
         payload: list[dict[str, object]] = []
         calls_used = 0
         tool_started = False
@@ -255,8 +263,6 @@ class ChatModel:
                     schemas = [*schemas, IMAGE_TOOL]
                 seen_ids: set[str] = set()
                 while True:
-                    emit("model.request.started", prompt_messages=len(payload))
-                    start = time.monotonic()
                     request: dict[str, object] = {
                         "model": self.settings.model,
                         "messages": payload,
@@ -265,12 +271,7 @@ class ChatModel:
                     }
                     if schemas:
                         request.update(tools=schemas, tool_choice="auto")
-                    response = await self.client.post("chat/completions", json=request)
-                    emit(
-                        "model.response.received",
-                        status_code=response.status_code,
-                        elapsed_ms=elapsed_ms(start),
-                    )
+                    response = await self._request(request, session, deadline=deadline - reserve)
                     if response.status_code in {400, 422} and schemas and calls_used == 0:
                         # Unsupported provider schemas must not break ordinary group chat.
                         schemas = []
@@ -354,21 +355,111 @@ class ChatModel:
                     text = content.strip()
                     return None if text == "<SILENCE>" else text[:1500]
             if final_reason:
-                return await self._final_answer(payload, final_reason, calls_used, deadline)
+                return await self._final_answer(
+                    payload, final_reason, calls_used, deadline, session
+                )
             return await self._generate_image(image_function)
         except httpx.HTTPStatusError as error:
             raise ModelError(f"http_{error.response.status_code}") from None
         except TimeoutError:
             if tool_started and payload:
-                return await self._final_answer(payload, "tool_time_limit", calls_used, deadline)
+                return await self._final_answer(
+                    payload, "tool_time_limit", calls_used, deadline, session
+                )
             raise ModelError("connection_or_timeout") from None
         except httpx.RequestError:
             raise ModelError("connection_or_timeout") from None
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise ModelError("invalid_response") from None
 
+    async def _request(
+        self,
+        request: dict[str, object],
+        session: _ChatSession,
+        *,
+        deadline: float,
+        final_answer: bool = False,
+    ) -> httpx.Response:
+        """Switch provider once within the deadline, without replaying any tools."""
+        while True:
+            messages = cast(list[dict[str, object]], request["messages"])
+            can_fallback = bool(
+                not session.used_fallback
+                and self.settings.fallback_model
+                and self.settings.fallback_model != session.model
+            )
+            remaining = max(0, deadline - time.monotonic())
+            budget = (
+                remaining - min(FINAL_ANSWER_SECONDS, remaining / 3) if can_fallback else remaining
+            )
+            body = {**request, "model": session.model}
+            if session.used_fallback:
+                body["messages"] = _portable_messages(messages)
+            start = time.monotonic()
+            emit(
+                "model.request.started",
+                model=session.model,
+                prompt_messages=len(messages),
+                final_answer=final_answer,
+            )
+            try:
+                async with asyncio.timeout(budget):
+                    response = await self.client.post("chat/completions", json=body)
+                    emit(
+                        "model.response.received",
+                        model=session.model,
+                        status_code=response.status_code,
+                        elapsed_ms=elapsed_ms(start),
+                        final_answer=final_answer,
+                    )
+                    # Preserve the existing tools-unavailable handling after both models fail.
+                    if not can_fallback and response.status_code in {400, 422}:
+                        return response
+                    response.raise_for_status()
+                    message = response.json()["choices"][0]["message"]
+                    calls, content = message.get("tool_calls"), message.get("content")
+                    if final_answer and (
+                        calls or (isinstance(content, str) and content.strip() == "<SILENCE>")
+                    ):
+                        raise ModelError("invalid_final_response")
+                    if not calls and (not isinstance(content, str) or not content.strip()):
+                        raise ModelError("empty_response")
+                    return response
+            except httpx.HTTPStatusError as error:
+                reason = f"http_{error.response.status_code}"
+                if not can_fallback:
+                    raise
+            except (httpx.RequestError, TimeoutError):
+                reason = "connection_or_timeout"
+                if not can_fallback:
+                    raise
+            except ModelError as error:
+                reason = str(error)
+                if not can_fallback:
+                    raise
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                reason = "invalid_response"
+                if not can_fallback:
+                    raise ModelError(reason) from None
+            previous = session.model
+            session.model = self.settings.fallback_model
+            session.used_fallback = True
+            emit(
+                "model.fallback.started",
+                level="WARNING",
+                from_model=previous,
+                model=session.model,
+                reason=reason,
+                final_answer=final_answer,
+            )
+
     async def _final_answer(
-        self, payload: list[dict[str, object]], reason: str, calls_used: int, deadline: float
+        self,
+        payload: list[dict[str, object]],
+        reason: str,
+        calls_used: int,
+        deadline: float,
+        session: _ChatSession,
     ) -> str:
         emit("model.finalizing", reason=reason, tool_calls=calls_used, tool_limit=MAX_TOOL_CALLS)
         messages = list(payload)
@@ -404,17 +495,17 @@ class ChatModel:
             async with asyncio.timeout(
                 max(0, min(FINAL_ANSWER_SECONDS, deadline - time.monotonic()))
             ):
-                emit("model.request.started", prompt_messages=len(messages), final_answer=True)
-                response = await self.client.post(
-                    "chat/completions",
-                    json={
+                response = await self._request(
+                    {
                         "model": self.settings.model,
                         "messages": messages,
                         "max_tokens": 1024,
                         "stream": False,
                     },
+                    session,
+                    deadline=min(deadline, time.monotonic() + FINAL_ANSWER_SECONDS),
+                    final_answer=True,
                 )
-                emit("model.response.received", status_code=response.status_code, final_answer=True)
                 response.raise_for_status()
                 message = response.json()["choices"][0]["message"]
                 content = message.get("content")
@@ -434,6 +525,7 @@ class ChatModel:
             IndexError,
             TypeError,
             AttributeError,
+            ModelError,
         ):
             fallback_reason = "final_request_failed"
         emit("model.final_answer.fallback", level="WARNING", reason=fallback_reason)
@@ -528,3 +620,21 @@ class ChatModel:
             }
         )
         return messages
+
+
+def _portable_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Keep the tool protocol and results, excluding Gemini-only reasoning metadata."""
+    portable = []
+    for message in messages:
+        item = {
+            key: value
+            for key, value in message.items()
+            if key not in {"reasoning_content", "extra_content"}
+        }
+        calls = item.get("tool_calls")
+        if isinstance(calls, list):
+            item["tool_calls"] = [
+                {key: call[key] for key in ("id", "type", "function")} for call in calls
+            ]
+        portable.append(item)
+    return portable

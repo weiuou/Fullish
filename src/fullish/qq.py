@@ -17,6 +17,10 @@ from fullish.sending.qq import send_reply
 from fullish.sending.schema import outgoing
 from fullish.telemetry import elapsed_ms, emit, message_trace
 
+GENERATION_FAILURE_REPLY = "这次没能生成回复，暂时没处理好，请稍后再试。"
+IMAGE_FAILURE_REPLY = "这张图没能生成出来，这次没完成。"
+IMAGE_RATE_LIMIT_REPLY = "图片服务现在限流了，这张没生成出来，稍后再试。"
+
 
 class GroupOnlyAdapter(Adapter):
     def dispatch_event(self, bot: Bot, payload: Dispatch) -> None:
@@ -64,6 +68,7 @@ async def handle_group(
         start = time.monotonic()
         phase = "parse"
         outcome = "failed"
+        fallback = False
         try:
             message = collect_group_message(event)
             emit(
@@ -75,7 +80,34 @@ async def handle_group(
                 addressed=message.addressed,
             )
             phase = "conversation"
-            reply = await conversations.receive_message(message)
+            try:
+                reply = await conversations.receive_message(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # Only acknowledge an authorized reply request. Do not turn context-only
+                # events or permission failures into unsolicited group messages.
+                called = message.addressed or "fullish" in message.content.text.lower()
+                allowed = not conversations.allowed_groups or (
+                    message.group_id in conversations.allowed_groups
+                )
+                if not called or not allowed:
+                    raise
+                fields = (
+                    {"error_code": str(error)}
+                    if isinstance(error, ModelError)
+                    else {"error_type": type(error).__name__}
+                )
+                emit("qq.reply.fallback", level="WARNING", **fields)
+                if isinstance(error, ModelError) and str(error).startswith("image_"):
+                    reply = (
+                        IMAGE_RATE_LIMIT_REPLY
+                        if str(error) == "image_http_429"
+                        else IMAGE_FAILURE_REPLY
+                    )
+                else:
+                    reply = GENERATION_FAILURE_REPLY
+                fallback = True
             if reply:
                 phase = "send"
                 send_start = time.monotonic()
@@ -87,10 +119,10 @@ async def handle_group(
                     audio_count=sum(part.kind == "audio" for part in candidate.parts),
                 )
                 await send_reply(bot, event, candidate)
-                emit("qq.send.succeeded", elapsed_ms=elapsed_ms(send_start))
+                emit("qq.send.succeeded", fallback=fallback, elapsed_ms=elapsed_ms(send_start))
                 phase = "record"
                 conversations.sent(event.group_openid, reply)
-                outcome = "sent"
+                outcome = "fallback_sent" if fallback else "sent"
             else:
                 outcome = "no_reply"
         except asyncio.CancelledError:

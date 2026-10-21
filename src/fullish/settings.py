@@ -15,6 +15,7 @@ class ModelSettings:
     model: str = "gemini-3.8-flash-high"
     unix_socket: str | None = None
     timeout: float = 90
+    fallback_model: str = "gpt-6-luna"
 
     @classmethod
     def from_env(cls) -> Self | None:
@@ -40,12 +41,13 @@ class ModelSettings:
         model = os.environ.get("AI_MODEL", "gemini-3.8-flash-high").strip()
         if not model:
             raise ValueError("AI_MODEL must not be empty")
-        return cls(base, key, model, socket)
+        fallback = os.environ.get("AI_FALLBACK_MODEL", "gpt-6-luna").strip()
+        return cls(base, key, model, socket, fallback_model=fallback)
 
 
 @dataclass(frozen=True)
 class ImageGenerationSettings:
-    model: str = "auto"
+    model: str = "gpt-image-2.5"
     timeout: float = 120
 
     def __post_init__(self) -> None:
@@ -58,7 +60,7 @@ class ImageGenerationSettings:
 
     @classmethod
     def from_env(cls) -> Self | None:
-        model = os.environ.get("AI_IMAGE_MODEL", "auto").strip()
+        model = os.environ.get("AI_IMAGE_MODEL", "gpt-image-2.5").strip()
         if model.lower() == "off":
             return None
         try:

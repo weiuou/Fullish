@@ -50,13 +50,14 @@ curl -fsS http://127.0.0.1:18080/health/dependencies
 AI_BASE_URL=http://localhost/v1
 AI_API_KEY=服务器上的CPA客户端密钥
 AI_MODEL=gemini-3.8-flash-high
+AI_FALLBACK_MODEL=gpt-6-luna
 AI_UNIX_SOCKET=/run/fullish-cpa/api.sock
 # 生图复用同一 CPA 密钥；auto 为默认值，也可指定实际图片模型 ID 或 off。
-AI_IMAGE_MODEL=auto
+AI_IMAGE_MODEL=gpt-image-2.5
 AI_IMAGE_TIMEOUT_SECONDS=120
 ```
 
-模型名来自当前 CPA 的 `/v1/models`。该部署使用 CPA 提供的 `gemini-3.8-flash-high`，没有自动回退到其他模型。若 CPA 更换提供商或名称，需重新核对列表。
+模型名来自当前 CPA 的 `/v1/models`。该部署默认使用 CPA 提供的 `gemini-3.8-flash-high`，文字请求报错、超时、空内容或响应格式错误时，在同一轮切换一次到 `gpt-6-luna`。后续请求继续使用备用模型，下一轮重新尝试主模型；设 `AI_FALLBACK_MODEL=` 可关闭回退。切换保留上下文、工具结果和剩余额度，不重跑已执行工具，并去掉 Gemini 专用的思考签名。主请求预留备用请求时间，整轮仍受原有总超时限制；工具耗尽后的最终答复也支持回退，两者都失败则使用原有未完成提示。结构化日志通过 `model.fallback.started` 记录原因和目标模型，各请求记录实际模型。若 CPA 更换提供商或名称，需重新核对列表。
 
 同机 CPA 只监听宿主机 `127.0.0.1:8317`，容器自己的 `127.0.0.1` 无法访问它。这里用 systemd 的 Unix socket 转发，通过只读目录挂载提供给 HTTPX；保持 CPA 的监听范围，无需公网绕行。
 
@@ -93,7 +94,7 @@ sudo docker exec fullish-bot-1 python -m fullish.check_model
 
 回复默认为一到三句，避免客服套话，保留选择沉默的能力。长期记忆、主动插话评测和过时话题判断仍是后续工作。
 
-发送出口支持独立的图片、语音适配器，可以发送已有 URL、字节或本地文件，图片可以与文字同条发送。Gemini 生图复用现有 CPA 地址、密钥和 socket，默认从模型列表自动识别生图模型；进入回复流程后，聊天模型可根据语境自主选择生图表达反应、想法或说明，不要求群友先发画图命令。配文与真实生成图片同条发送，也支持只发图片。发言触发仍为 @ / 当前正文提到 Fullish，频率限制沿用现有策略。接口要求、验收命令及 QQ 的单附件限制见 [图片、语音与图文发送](message-sending.md)。
+发送出口支持独立的图片、语音适配器，可以发送已有 URL、字节或本地文件，图片可以与文字同条发送。GPT Image 生图复用现有 CPA 地址、密钥和 socket，默认使用 `gpt-image-2.5`；进入回复流程后，聊天模型可根据语境自主选择生图表达反应、想法或说明，不要求群友先发画图命令。配文与真实生成图片同条发送，也支持只发图片。发言触发仍为 @ / 当前正文提到 Fullish，频率限制沿用现有策略。接口要求、验收命令及 QQ 的单附件限制见 [图片、语音与图文发送](message-sending.md)。
 
 ## 追踪消息流转
 

@@ -139,7 +139,7 @@ def test_bare_mention_flows_from_dispatch_to_accepted_reply(flow, content) -> No
 
 
 @pytest.mark.parametrize("case", ["model_failure", "silence", "send_failure", "timeout"])
-def test_failure_or_silence_is_explained_without_recording_a_sent_reply(flow, case) -> None:
+def test_failures_are_acknowledged_and_only_accepted_replies_are_recorded(flow, case) -> None:
     async def run() -> None:
         async def respond(request: httpx.Request) -> httpx.Response:
             if case == "timeout":
@@ -164,12 +164,15 @@ def test_failure_or_silence_is_explained_without_recording_a_sent_reply(flow, ca
             await handle_group(conversations, bot, event(content="message-body-private"))
             assert conversations.active == 0
             assert not conversations.groups["group-private-id"].lock.locked()
+            acknowledged = case in {"model_failure", "timeout"}
             assert all(
                 turn["role"] == "user" for turn in conversations.groups["group-private-id"].turns
-            )
+            ) == (not acknowledged)
             assert len({record["trace_id"] for record in flow}) == 1
             assert flow[-1]["stage"] == "qq.message.completed"
-            assert flow[-1]["outcome"] == ("no_reply" if case == "silence" else "failed")
+            assert flow[-1]["outcome"] == (
+                "fallback_sent" if acknowledged else "no_reply" if case == "silence" else "failed"
+            )
             if case == "silence":
                 assert any(record.get("outcome") == "silence" for record in flow)
                 bot.send.assert_not_awaited()
@@ -182,7 +185,8 @@ def test_failure_or_silence_is_explained_without_recording_a_sent_reply(flow, ca
                 assert failure["error_code"] == (
                     "http_503" if case == "model_failure" else "connection_or_timeout"
                 )
-                bot.send.assert_not_awaited()
+                bot.send.assert_awaited_once()
+                assert any(record["stage"] == "qq.reply.fallback" for record in flow)
             serialized = json.dumps(flow)
             for private in (
                 "credential-private",

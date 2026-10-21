@@ -67,7 +67,8 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
         assert result['qq_enabled'] is True
         assert result['qq_connected'] is False
         assert result['image_generation_enabled'] is True
-        assert result['image_model'] == 'auto'
+        assert result['image_model'] == 'gpt-image-2.5'
+        assert result['fallback_model'] == 'gpt-6-luna'
         assert client.get('/version').json()['mode'] == 'qq'
     assert app.state.model.client.is_closed
     assert app.state.model.image_generator.client.is_closed
