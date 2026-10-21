@@ -5,7 +5,7 @@ umask 077
 die() { printf '%s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 && $# -eq 0 ]] || die 'Usage: sudo bash scripts/sandbox-runtime-setup.sh'
 [[ $(uname -m) == x86_64 ]] || die 'The verified sandbox runtime currently requires x86_64.'
-for tool in curl sha512sum tar python3 useradd loginctl runuser flock dockerd-rootless-setuptool.sh rootlesskit newuidmap newgidmap; do
+for tool in curl sha512sum tar python3 useradd loginctl runuser flock dockerd-rootless.sh rootlesskit newuidmap newgidmap; do
     command -v "$tool" >/dev/null || die "Install the rootless Docker prerequisites first: $tool"
 done
 [[ -f /sys/fs/cgroup/cgroup.controllers ]] || die 'cgroup v2 is required.'
@@ -49,12 +49,25 @@ printf '[Service]\nDelegate=cpu memory pids\n' > "/etc/systemd/system/user@$sand
 systemctl daemon-reload
 systemctl start "user@$sandbox_uid.service"
 user_command=(runuser -u fullish-sandbox -- env -i PATH=/usr/local/bin:/usr/bin:/bin "HOME=$sandbox_home" USER=fullish-sandbox LOGNAME=fullish-sandbox "XDG_RUNTIME_DIR=/run/user/$sandbox_uid" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$sandbox_uid/bus")
-if [[ ! -f $sandbox_home/.config/systemd/user/docker.service ]]; then
-    if ! "${user_command[@]}" dockerd-rootless-setuptool.sh install --force; then
-        "${user_command[@]}" journalctl --user --unit docker.service -n 40 --no-pager >&2 || true
-        die 'Dedicated rootless Docker initialization failed.'
-    fi
+unit_changed=false
+sandbox_gid=$(id -g fullish-sandbox)
+unit_directory="$sandbox_home/.config/systemd/user"
+for directory in "$sandbox_home/.config" "$sandbox_home/.config/systemd" "$unit_directory" "$unit_directory/docker.service.d"; do
+    install -d -o "$sandbox_uid" -g "$sandbox_gid" -m 700 "$directory"
+done
+if [[ ! -f $unit_directory/docker.service ]]; then
+    install -o "$sandbox_uid" -g "$sandbox_gid" -m 600 "$source_root/deploy/fullish-rootless-docker.service" "$unit_directory/docker.service"
+    unit_changed=true
 fi
+environment_file=$(mktemp "$root/runtime-environment.XXXXXXXX")
+printf '[Service]\nEnvironment="HOME=%s" "XDG_CONFIG_HOME=%s/.config" "DOCKER_CONFIG=%s/.docker" "XDG_RUNTIME_DIR=/run/user/%s" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus" "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/user/%s/bus" "USER=fullish-sandbox" "LOGNAME=fullish-sandbox"\n' \
+    "$sandbox_home" "$sandbox_home" "$sandbox_home" "$sandbox_uid" "$sandbox_uid" "$sandbox_uid" > "$environment_file"
+if ! cmp -s "$environment_file" "$unit_directory/docker.service.d/zz-fullish-environment.conf"; then
+    install -o "$sandbox_uid" -g "$sandbox_gid" -m 600 "$environment_file" "$unit_directory/docker.service.d/zz-fullish-environment.conf"
+    unit_changed=true
+fi
+rm -f -- "$environment_file"
+"${user_command[@]}" systemctl --user daemon-reload
 # Configuration changes are detected, so repeated setup does not restart a healthy sandbox.
 changed=$(python3 - "$sandbox_home" "$sandbox_uid" <<'PY'
 import json, os, pathlib, sys, tempfile
@@ -76,10 +89,15 @@ if json.loads(before) != config:
     print('yes')
 PY
 )
-if [[ $changed == yes ]]; then
-    "${user_command[@]}" systemctl --user restart docker
+if [[ $changed == yes || $unit_changed == true ]]; then
+    action=restart
 else
-    "${user_command[@]}" systemctl --user start docker
+    action=start
+fi
+"${user_command[@]}" systemctl --user enable docker
+if ! "${user_command[@]}" systemctl --user "$action" docker; then
+    "${user_command[@]}" journalctl --user --unit docker.service -n 40 --no-pager >&2 || true
+    die 'Dedicated rootless Docker initialization failed.'
 fi
 "${user_command[@]}" docker --host "unix:///run/user/$sandbox_uid/docker.sock" info --format '{{.CgroupVersion}} {{.CgroupDriver}}' | grep -qx '2 systemd' || die 'Rootless cgroup v2/systemd is required.'
 printf 'Pinned rootless gVisor runtime installed. Broker acceptance is still required.\n'
