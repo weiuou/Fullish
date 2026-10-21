@@ -110,6 +110,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y uidmap dbus-user-session slirp4netns
+          if ! command -v dockerd-rootless-setuptool.sh >/dev/null; then
+            package="$RUNNER_TEMP/fullish-rootless-extras.deb"
+            curl --fail --silent --show-error --location --retry 3 \
+              https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce-rootless-extras_29.9.1-1~ubuntu.24.04~noble_amd64.deb \
+              --output "$package"
+            printf '%s  %s\n' d023824e4c5a1af5ea1bc6270f37229599d4aed09b5ac508f5e2dee32e13f7cc "$package" | sha256sum --check
+            sudo apt-get install -y --no-install-recommends "$package"
+          fi
           command -v dockerd-rootless-setuptool.sh
           command -v rootlesskit
       - name: Verify real rootless gVisor, host limits and deployment socket
