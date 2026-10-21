@@ -66,8 +66,11 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
         assert result['model_available'] is True
         assert result['qq_enabled'] is True
         assert result['qq_connected'] is False
+        assert result['image_generation_enabled'] is True
+        assert result['image_model'] == 'auto'
         assert client.get('/version').json()['mode'] == 'qq'
     assert app.state.model.client.is_closed
+    assert app.state.model.image_generator.client.is_closed
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
