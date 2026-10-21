@@ -69,7 +69,7 @@ sudo bash scripts/sandbox-runtime-setup.sh
 ```sh
 sandbox_uid=$(id -u fullish-sandbox)
 sudo -u fullish-sandbox env HOME=/var/lib/fullish-sandbox XDG_RUNTIME_DIR=/run/user/$sandbox_uid \
-  docker --host unix:///run/user/$sandbox_uid/docker.sock build -f deploy/Dockerfile.sandbox -t fullish-sandbox:local .
+  docker --host unix:///run/user/$sandbox_uid/docker.sock build --network=none -f deploy/Dockerfile.sandbox -t fullish-sandbox:local .
 sudo -u fullish-sandbox env XDG_RUNTIME_DIR=/run/user/$sandbox_uid \
   docker --host unix:///run/user/$sandbox_uid/docker.sock image inspect --format '{{.Id}}' fullish-sandbox:local
 ```
