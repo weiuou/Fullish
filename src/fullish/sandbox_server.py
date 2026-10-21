@@ -118,12 +118,18 @@ class Sandboxes:
         info = json.loads(self.docker(["info", "--format", "{{json .}}"]))
         if (
             info.get("CgroupVersion") != "2"
+            or info.get("CgroupDriver") != "systemd"
             or not any(
                 str(item).startswith("name=rootless") for item in info.get("SecurityOptions", [])
             )
             or "runsc" not in info.get("Runtimes", {})
         ):
             raise SandboxError("rootless_runsc_with_cgroups_required")
+        runtime = info["Runtimes"]["runsc"]
+        if runtime.get("path") != "/opt/fullish-sandbox/sandbox-runsc.py" or runtime.get(
+            "runtimeArgs"
+        ) != ["--platform=systrap"]:
+            raise SandboxError("verified_systemd_runtime_adapter_required")
         image = json.loads(self.docker(["image", "inspect", self.image]))[0]
         self.image_env = image["Config"].get("Env") or []
 

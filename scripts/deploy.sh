@@ -90,6 +90,12 @@ if [[ -n ${FULLISH_QQ_CONFIG_FILE:-} ]]; then
     helper=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime_config.py
     python3 "$helper" update "$root/runtime.env" < "$FULLISH_QQ_CONFIG_FILE"
 fi
+# An enabled sandbox must work through the candidate's actual Compose mounts
+# before the healthy sender is stopped. This runs no model or QQ requests.
+sandbox_enabled() { grep -Eq '^SANDBOX_(SOCKET|TOKEN)=.+' "$root/runtime.env"; }
+if sandbox_enabled; then
+    timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -m fullish.sandbox_check
+fi
 apply_started=1
 # Single active sender: stop old application before starting its replacement.
 timeout 45 "${compose[@]}" stop --timeout 30 bot
@@ -98,6 +104,9 @@ container=$("${compose[@]}" ps --quiet bot)
 [[ -n $container ]] || die 'Compose returned without a running application.'
 [[ $(docker inspect --format '{{.State.Health.Status}}' "$container") == healthy ]] || die 'Application did not pass its healthcheck.'
 [[ $(docker inspect --format '{{.Config.Image}}' "$container") == "$target" ]] || die 'Running image does not match the requested digest.'
+if sandbox_enabled; then
+    timeout 90 docker exec "$container" python -m fullish.sandbox_check
+fi
 
 if [[ $current != "$target" ]]; then previous=$current; fi
 # Commit is a tiny critical section: after the state rename, a TERM must not

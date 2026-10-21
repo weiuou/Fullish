@@ -5,12 +5,28 @@ worker in a temporary Docker container (CI); this does not attest gVisor isolati
 """
 
 import argparse
+import http.client
 import json
 import shlex
+import socket
 import subprocess
 import sys
 import uuid
 from pathlib import Path
+
+
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path: str):
+        super().__init__("sandbox", timeout=45)
+        self.path = path
+
+    def connect(self) -> None:
+        family = getattr(socket, "AF_UNIX", None)
+        if family is None:
+            raise RuntimeError("Linux Unix sockets are required")
+        self.sock = socket.socket(family, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.path)
 
 
 def main() -> None:
@@ -19,22 +35,13 @@ def main() -> None:
     args = parser.parse_args()
     name = "fullish-worker-smoke-" + uuid.uuid4().hex[:12]
     prefix = "probe_" + uuid.uuid4().hex[:12]
-    client = None
     settings = {}
     if not args.worker_image:
-        import httpx
-
         # No token in CLI arguments or output. Run as a trusted administrator.
         settings = dict(
             line.split("=", 1)
             for line in Path("/etc/fullish-sandbox.env").read_text().splitlines()
             if "=" in line
-        )
-        client = httpx.Client(
-            transport=httpx.HTTPTransport(uds=settings["SANDBOX_SOCKET"]),
-            base_url="http://sandbox",
-            timeout=45,
-            headers={"Authorization": "Bearer " + settings["SANDBOX_TOKEN"]},
         )
 
     def invoke(command: str, timeout: int = 5) -> dict:
@@ -48,19 +55,31 @@ def main() -> None:
                 check=True,
             )
             return json.loads(result.stdout)
-        assert client is not None
-        response = client.post(
-            "/exec",
-            json={
-                "group_id": settings["TOOLS_ALLOWED_GROUPS"].split(",")[0],
-                "sender_id": "synthetic-smoke",
-                "message_id": prefix,
-                "command": command,
-                "timeout_seconds": timeout,
-            },
-        )
-        response.raise_for_status()
-        return response.json()
+        client = UnixHTTPConnection(settings["SANDBOX_SOCKET"])
+        try:
+            client.request(
+                "POST",
+                "/exec",
+                body=json.dumps(
+                    {
+                        "group_id": settings["TOOLS_ALLOWED_GROUPS"].split(",")[0],
+                        "sender_id": "synthetic-smoke",
+                        "message_id": prefix,
+                        "command": command,
+                        "timeout_seconds": timeout,
+                    }
+                ),
+                headers={
+                    "Authorization": "Bearer " + settings["SANDBOX_TOKEN"],
+                    "Content-Type": "application/json",
+                },
+            )
+            response = client.getresponse()
+            if response.status != 200:
+                raise RuntimeError("broker_request_failed")
+            return json.loads(response.read(65537))
+        finally:
+            client.close()
 
     def python(source: str) -> str:
         return "python3 -c " + shlex.quote(source)
@@ -138,8 +157,6 @@ def main() -> None:
         check("bounded output", data["truncated"] and len(data["output"]) <= 12000)
         invoke("rm -f /workspace/" + prefix)
     finally:
-        if client:
-            client.close()
         if args.worker_image:
             subprocess.run(
                 ["docker", "rm", "--force", name],

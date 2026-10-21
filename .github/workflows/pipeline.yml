@@ -106,6 +106,38 @@ jobs:
         run: |
           docker build -f deploy/Dockerfile.sandbox -t fullish-sandbox:ci .
           python3 scripts/sandbox-smoke.py --worker-image fullish-sandbox:ci
+      - name: Install rootless sandbox test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uidmap dbus-user-session slirp4netns ca-certificates curl gnupg
+          # Use the production engine and matching rootless extras. Mixing the
+          # runner's older Moby daemon with newer RootlessKit breaks AppArmor.
+          sudo install -d -m 755 /etc/apt/keyrings
+          curl --fail --silent --show-error --location --retry 3 \
+            https://download.docker.com/linux/ubuntu/gpg --output "$RUNNER_TEMP/docker.asc"
+          fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/docker.asc" | awk -F: '$1 == "fpr" { print $10; exit }')
+          test "$fingerprint" = 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+          sudo install -m 644 "$RUNNER_TEMP/docker.asc" /etc/apt/keyrings/fullish-docker.asc
+          echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/fullish-docker.asc] https://download.docker.com/linux/ubuntu noble stable' | sudo tee /etc/apt/sources.list.d/fullish-docker.list
+          sudo apt-get update
+          conflicts=()
+          for package in moby-engine moby-cli moby-containerd moby-runc docker.io containerd runc; do
+            if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+              conflicts+=("$package")
+            fi
+          done
+          if (( ${#conflicts[@]} )); then sudo apt-get remove -y "${conflicts[@]}"; fi
+          sudo apt-get install -y --no-install-recommends \
+            docker-ce=5:29.9.1-1~ubuntu.24.04~noble \
+            docker-ce-cli=5:29.9.1-1~ubuntu.24.04~noble \
+            docker-ce-rootless-extras=5:29.9.1-1~ubuntu.24.04~noble
+          sudo systemctl restart docker
+          test "$(docker version --format '{{.Server.Version}}')" = 29.9.1
+          docker image inspect fullish:ci fullish-sandbox:ci >/dev/null
+          command -v dockerd-rootless-setuptool.sh
+          command -v rootlesskit
+      - name: Verify real rootless gVisor, host limits and deployment socket
+        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci
       - name: Export the verified image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker save --output fullish-image.tar fullish:ci
