@@ -43,6 +43,17 @@ def main() -> None:
             for line in Path("/etc/fullish-sandbox.env").read_text().splitlines()
             if "=" in line
         )
+        if policy_path := settings.get("GROUP_POLICY_PATH"):
+            policy = json.loads(Path(policy_path).read_text())
+            enabled = [
+                group
+                for group, overrides in policy["groups"].items()
+                if {**policy["defaults"], **overrides}["chat"] and overrides.get("sandbox", False)
+            ]
+            if not enabled:
+                print("No groups currently enable sandbox; broker socket startup was verified.")
+                return
+            settings["TOOLS_ALLOWED_GROUPS"] = ",".join(sorted(enabled))
 
     def invoke(command: str, timeout: int = 5) -> dict:
         if args.worker_image:

@@ -5,9 +5,11 @@
 [![NoneBot](https://img.shields.io/badge/NoneBot-2-EA5252)](https://nonebot.dev/)
 [![Docker](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](docs/deployment-ssh.md)
 
-可自托管、可扩展的 QQ AI 群友：理解群聊、适时接话，忽略私聊。
+可自托管、可扩展的 QQ AI 群友：理解群聊、适时接话，开发者可通过私聊菜单管理群功能。
 
 已接入 CPA / Gemini 和 QQ 官方适配器；配置凭证后可在群内聊天。[接入指南](docs/qq-setup.md)
+
+[私聊开发者菜单](docs/group-control.md)：一次绑定后，在 QQ 中动态开启或关闭各群的聊天、搜索、生图、沙箱。
 
 ## 快速开始
 

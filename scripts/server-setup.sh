@@ -25,6 +25,7 @@ if [[ -f $root/image-repository ]]; then
 fi
 
 install -d -m 700 "$root" "$root/bin" "$root/state"
+install -d -m 750 -o 10001 -g 10001 /var/lib/fullish-control
 exec 9>"$root/.deploy.lock"
 flock -n 9 || die 'A deployment is running. Try setup again after it finishes.'
 staging="$root/setup-staging.$$"

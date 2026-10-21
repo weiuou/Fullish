@@ -13,6 +13,7 @@ import httpx
 from fullish.collection import QuotedMessage
 from fullish.errors import ModelError as ModelError
 from fullish.generation import ImageGenerator
+from fullish.group_policy import GroupPolicies
 from fullish.media import sniff_image_type as sniff_image_type
 from fullish.sending import Image, OutgoingMessage, Reply, Text
 from fullish.sending.schema import outgoing
@@ -109,10 +110,12 @@ class ChatModel:
         transport: httpx.AsyncBaseTransport | None = None,
         tools: ToolRuntime | None = None,
         image_generator: ImageGenerator | None = None,
+        policies: GroupPolicies | None = None,
     ):
         self.settings = settings
         self.tools = tools
         self.image_generator = image_generator
+        self.policies = policies
         self.client = httpx.AsyncClient(
             base_url=settings.base_url + "/",
             headers={"Authorization": "Bearer " + settings.api_key},
@@ -259,7 +262,7 @@ class ChatModel:
                 schemas = self.tools.schemas(context) if self.tools else []
                 if schemas:
                     payload.insert(1, {"role": "system", "content": TOOL_PROMPT})
-                if self.image_generator:
+                if self._image_allowed(context):
                     schemas = [*schemas, IMAGE_TOOL]
                 seen_ids: set[str] = set()
                 while True:
@@ -358,6 +361,8 @@ class ChatModel:
                 return await self._final_answer(
                     payload, final_reason, calls_used, deadline, session
                 )
+            if not self._image_allowed(context):
+                raise ModelError("image_disabled")
             return await self._generate_image(image_function)
         except httpx.HTTPStatusError as error:
             raise ModelError(f"http_{error.response.status_code}") from None
@@ -530,6 +535,15 @@ class ChatModel:
             fallback_reason = "final_request_failed"
         emit("model.final_answer.fallback", level="WARNING", reason=fallback_reason)
         return INCOMPLETE_REPLY
+
+    def _image_allowed(self, context: ToolContext | None) -> bool:
+        return bool(
+            self.image_generator
+            and (
+                not self.policies
+                or (context and self.policies.features(context.group_id).allows("image"))
+            )
+        )
 
     async def _generate_image(self, function: dict) -> OutgoingMessage:
         if not self.image_generator:

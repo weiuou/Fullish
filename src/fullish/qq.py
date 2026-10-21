@@ -2,8 +2,9 @@
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 
-from nonebot import on_message
+from nonebot import get_adapter, on_message
 from nonebot.adapters.qq import Adapter, Bot
 from nonebot.adapters.qq.event import Event, GroupMessageCreateEvent
 from nonebot.adapters.qq.exception import ActionFailed
@@ -11,6 +12,7 @@ from nonebot.adapters.qq.models import Dispatch
 
 from fullish.collection.qq import collect_group_message
 from fullish.conversation import Conversations
+from fullish.developer_menu import DeveloperMenu
 from fullish.message_queue import GroupMessageQueue
 from fullish.model import ModelError
 from fullish.sending.qq import send_reply
@@ -23,7 +25,14 @@ IMAGE_RATE_LIMIT_REPLY = "图片服务现在限流了，这张没生成出来，
 
 
 class GroupOnlyAdapter(Adapter):
+    private_handler: Callable[[Bot, Dispatch], Awaitable[None]] | None = None
+
     def dispatch_event(self, bot: Bot, payload: Dispatch) -> None:
+        if payload.type == "C2C_MESSAGE_CREATE" and self.private_handler:
+            task = asyncio.create_task(self._private(bot, payload))
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
+            return
         if payload.type in {"C2C_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}:
             emit("qq.event.skipped", event_type=payload.type, reason="private_message")
             return
@@ -31,6 +40,15 @@ class GroupOnlyAdapter(Adapter):
         with message_trace(str(data.get("group_openid", "")), str(data.get("id", ""))):
             emit("qq.event.received", event_type=payload.type, sequence=payload.sequence)
             super().dispatch_event(bot, payload)
+
+    async def _private(self, bot: Bot, payload: Dispatch) -> None:
+        try:
+            if self.private_handler:
+                await self.private_handler(bot, payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            emit("developer.command.failed", level="WARNING", error_type=type(error).__name__)
 
     @staticmethod
     def payload_to_event(payload: Dispatch) -> Event:
@@ -44,8 +62,19 @@ class GroupOnlyAdapter(Adapter):
         return event
 
 
-def install_group_handler(conversations: Conversations) -> GroupMessageQueue:
+def install_group_handler(
+    conversations: Conversations, *, developer: DeveloperMenu | None = None
+) -> GroupMessageQueue:
     queue = GroupMessageQueue()
+    if developer:
+
+        async def private(bot: Bot, payload: Dispatch) -> None:
+            # Separate FIFO keeps private menu operations ordered without waiting on LLM calls.
+            await queue.submit(
+                "developer-menu", payload.id or "", lambda: developer.handle(bot, payload)
+            )
+
+        get_adapter(GroupOnlyAdapter).private_handler = private
 
     async def is_group(event: GroupMessageCreateEvent) -> bool:
         return True
@@ -88,9 +117,7 @@ async def handle_group(
                 # Only acknowledge an authorized reply request. Do not turn context-only
                 # events or permission failures into unsolicited group messages.
                 called = message.addressed or "fullish" in message.content.text.lower()
-                allowed = not conversations.allowed_groups or (
-                    message.group_id in conversations.allowed_groups
-                )
+                allowed = conversations.group_allowed(message.group_id)
                 if not called or not allowed:
                     raise
                 fields = (
@@ -109,6 +136,10 @@ async def handle_group(
                     reply = GENERATION_FAILURE_REPLY
                 fallback = True
             if reply:
+                if not conversations.reply_allowed(event.group_openid, reply):
+                    emit("qq.reply.skipped", reason="group_policy_changed")
+                    outcome = "no_reply"
+                    return
                 phase = "send"
                 send_start = time.monotonic()
                 candidate = outgoing(reply)

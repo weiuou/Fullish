@@ -31,7 +31,7 @@ install -d -m 755 /opt/fullish-sandbox
 backup=$(mktemp -d /opt/fullish-sandbox/setup-backup.XXXXXXXX)
 was_active=false
 systemctl is-active --quiet fullish-sandbox.service && was_active=true
-for path in /opt/fullish-sandbox/server.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
+for path in /opt/fullish-sandbox/server.py /opt/fullish-sandbox/group_policy.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
     [[ ! -f $path ]] || cp -p -- "$path" "$backup/${path##*/}"
 done
 accepted=false
@@ -40,7 +40,7 @@ finish() {
     trap - EXIT
     if [[ $accepted != true ]]; then
         systemctl stop fullish-sandbox.service || true
-        for path in /opt/fullish-sandbox/server.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
+        for path in /opt/fullish-sandbox/server.py /opt/fullish-sandbox/group_policy.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
             if [[ -f $backup/${path##*/} ]]; then cp -p -- "$backup/${path##*/}" "$path"; fi
         done
         systemctl daemon-reload
@@ -51,9 +51,12 @@ finish() {
 }
 trap finish EXIT
 install -m 644 "$source_root/src/fullish/sandbox_server.py" /opt/fullish-sandbox/server.py
+install -m 644 "$source_root/src/fullish/group_policy.py" /opt/fullish-sandbox/group_policy.py
 install -m 644 "$source_root/deploy/fullish-sandbox.service" /etc/systemd/system/fullish-sandbox.service
 python3 - "$sandbox_group" "$sandbox_image" "$sandbox_host" "$sandbox_home" "$sandbox_uid" <<'PY'
 import os, pathlib, secrets, sys, tempfile
+sys.path.insert(0, '/opt/fullish-sandbox')
+from group_policy import GroupPolicies, legacy_policy
 group, image, host, home, uid = sys.argv[1:]
 path = pathlib.Path('/etc/fullish-sandbox.env')
 settings = dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line) if path.exists() else {}
@@ -63,6 +66,14 @@ settings.update({'TOOLS_ALLOWED_GROUPS': settings.get('TOOLS_ALLOWED_GROUPS', gr
                  'SANDBOX_IMAGE': image, 'SANDBOX_TOKEN': settings.get('SANDBOX_TOKEN') or secrets.token_urlsafe(48),
                  'SANDBOX_DOCKER_HOST': host, 'SANDBOX_SOCKET': '/run/fullish-sandbox/api.sock',
                  'HOME': home, 'XDG_RUNTIME_DIR': '/run/user/' + uid})
+policy = GroupPolicies(pathlib.Path('/var/lib/fullish-control/policy.json'))
+if not policy.path.exists():
+    runtime = dict(line.split('=', 1) for line in pathlib.Path('/opt/fullish/runtime.env').read_text().splitlines() if '=' in line and not line.startswith('#'))
+    os.environ.update(runtime)
+    os.environ.update(settings)
+    policy.write(legacy_policy())
+    os.chown(policy.path, 10001, 10001)
+settings['GROUP_POLICY_PATH'] = str(policy.path)
 fd, name = tempfile.mkstemp(dir=path.parent, prefix='.sandbox-config-')
 with os.fdopen(fd, 'w') as output:
     output.write('\n'.join(key+'='+value for key,value in settings.items())+'\n')

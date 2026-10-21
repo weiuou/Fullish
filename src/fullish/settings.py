@@ -127,7 +127,9 @@ class ToolSettings:
         token = os.environ.get("SANDBOX_TOKEN", "").strip()
         if not groups and not key and not socket and not token:
             return None
-        if not groups or any(not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", group) for group in groups):
+        if (not groups and not os.environ.get("GROUP_CONTROL_DIR")) or any(
+            not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", group) for group in groups
+        ):
             raise ValueError("Tools require explicit TOOLS_ALLOWED_GROUPS OpenIDs")
         if key and (len(key) > 2048 or any(not 33 <= ord(char) <= 126 for char in key)):
             raise ValueError("DEEPSEEK_API_KEY must be a single ASCII token")
