@@ -3,9 +3,10 @@
 import asyncio
 import time
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TypedDict
 
+from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
 from fullish.model import ChatModel
 from fullish.model import Turn as ModelTurn
 from fullish.telemetry import emit, message_trace, reference, trace_id
@@ -23,15 +24,23 @@ class Turn(TypedDict):
     images: list[str]
     created: float
     trace_id: str
+    message: CollectedMessage | None
 
 
-def turn(role: str, content: str, *, images: list[str] | None = None) -> Turn:
+def turn(
+    role: str,
+    content: str,
+    *,
+    images: list[str] | None = None,
+    message: CollectedMessage | None = None,
+) -> Turn:
     return {
         "role": role,
         "content": content,
         "images": images or [],
         "created": time.monotonic(),
         "trace_id": trace_id(),
+        "message": message,
     }
 
 
@@ -61,25 +70,26 @@ class Conversations:
         addressed: bool,
         images: list[str] | None = None,
     ) -> str | None:
-        with message_trace(group_id, message_id):
-            return await self._receive(
-                group_id, message_id, sender, text, addressed=addressed, images=images
-            )
+        """Convenience entry for text-based replay and callers without an adapter."""
+        parts = (MessagePart("text", text),) + tuple(
+            MessagePart("image", "", {"url": url}, status="pending") for url in images or ()
+        )
+        return await self.receive_message(
+            CollectedMessage(group_id, message_id, Sender(sender), ParsedContent(parts), addressed)
+        )
 
-    async def _receive(
-        self,
-        group_id: str,
-        message_id: str,
-        sender: str,
-        text: str,
-        *,
-        addressed: bool,
-        images: list[str] | None,
-    ) -> str | None:
-        images = images or []
+    async def receive_message(self, message: CollectedMessage) -> str | None:
+        with message_trace(message.group_id, message.message_id):
+            return await self._receive(message)
+
+    async def _receive(self, message: CollectedMessage) -> str | None:
+        group_id, message_id = message.group_id, message.message_id
+        text, images = message.content.text, message.content.image_urls
+        addressed = message.addressed
+        called = addressed or "fullish" in text.lower()
         emit(
             "conversation.received",
-            sender_ref=reference(sender),
+            sender_ref=reference(message.sender.id),
             text_chars=len(text),
             image_count=len(images),
             addressed=addressed,
@@ -87,6 +97,8 @@ class Conversations:
         if self.allowed_groups and group_id not in self.allowed_groups:
             emit("conversation.skipped", reason="group_not_allowed")
             return None
+        message = replace(message, content=message.content.limited(2000))
+        text = message.content.text
         # The adapter strips our mention. An empty remainder is still a valid call.
         if not text.strip():
             text = "（@了 Fullish）" if addressed else "[图片]" if images else "[无文字内容]"
@@ -113,10 +125,9 @@ class Conversations:
             emit("conversation.skipped", reason="duplicate")
             return None
         group.seen.append(message_id)
-        group.turns.append(turn("user", f"群成员 {sender}: {text[:2000]}", images=list(images)))
+        group.turns.append(turn("user", text, images=list(images), message=message))
         self._trim(group.turns)
         emit("context.recorded", role="user", history_turns=len(group.turns))
-        called = addressed or "fullish" in text.lower()
         # Initially speak only when addressed or named. Other messages provide context.
         reason = (
             "context_only"
@@ -148,14 +159,18 @@ class Conversations:
                         else []
                     )
                     remaining -= len(recent)
-                    history.append(
-                        {
-                            "role": item["role"],
-                            "content": item["content"],
-                            "images": recent,
-                            "trace_id": item["trace_id"],
-                        }
-                    )
+                    model_turn: ModelTurn = {
+                        "role": item["role"],
+                        "content": item["content"],
+                        "images": recent,
+                        "trace_id": item["trace_id"],
+                    }
+                    if source := item["message"]:
+                        model_turn["sender_id"] = source.sender.id
+                        model_turn["sender_name"] = source.sender.display_name
+                        model_turn["message_id"] = source.message_id
+                        model_turn["sent_at"] = source.sent_at
+                    history.append(model_turn)
                 emit(
                     "conversation.generating",
                     trigger="mention" if addressed else "name",
@@ -178,7 +193,7 @@ class Conversations:
 
     @staticmethod
     def _trim(turns: deque[Turn]) -> None:
-        # Character budget tracks the real prompt cost better than a fixed count.
+        # Bound body text as well as turn count; source metadata is retained separately.
         total = sum(len(item["content"]) for item in turns)
         removed: list[str] = []
         while total > HISTORY_CHARS and len(turns) > 1:

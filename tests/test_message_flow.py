@@ -88,7 +88,7 @@ def test_bare_mention_flows_from_dispatch_to_accepted_reply(flow, content) -> No
         try:
             adapter.dispatch_event(bot, payload)
             await asyncio.gather(*adapter.tasks)
-            assert payloads[0]["messages"][1]["content"].endswith("（@了 Fullish）")
+            assert json.loads(payloads[0]["messages"][1]["content"])["text"] == "（@了 Fullish）"
             bot.send.assert_awaited_once()
             assert [turn["role"] for turn in conversations.groups[incoming.group_openid].turns] == [
                 "user",

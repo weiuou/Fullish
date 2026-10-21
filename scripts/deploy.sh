@@ -111,3 +111,21 @@ runtime_backup=''
 trap 'exit 130' INT
 trap 'exit 143' TERM
 printf 'Deployment healthy: %s\n' "$target"
+
+# Operational reporting happens only after the successful release transaction.
+# A report failure must never restore the previous healthy application.
+revision_of() {
+    docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$1"
+}
+report_revision=$(revision_of "$target" 2>/dev/null || true)
+report_previous=''
+[[ -z $current ]] || report_previous=$(revision_of "$current" 2>/dev/null || true)
+if [[ $report_revision =~ ^[a-f0-9]{40}$ ]] && [[ -z $report_previous || $report_previous =~ ^[a-f0-9]{40}$ ]]; then
+    report_args=(--previous "$report_previous" --current "$report_revision")
+    (( rollback_mode == 0 )) || report_args+=(--rollback)
+    if ! timeout 320 docker exec "$container" python -m fullish.release_report "${report_args[@]}"; then
+        printf 'WARNING: deployment succeeded, but the QQ deployment report failed.\n' >&2
+    fi
+else
+    printf 'WARNING: deployment succeeded, but image revision labels are unavailable for reporting.\n' >&2
+fi
