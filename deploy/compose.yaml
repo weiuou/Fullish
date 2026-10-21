@@ -12,6 +12,8 @@ services:
       - "127.0.0.1:18080:8080"
     volumes:
       - ./cpa:/run/fullish-cpa:ro
+      # Empty when sandbox tools are disabled. This is the broker socket, not Docker.
+      - /run/fullish-sandbox:/run/fullish-sandbox:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m

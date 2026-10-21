@@ -102,6 +102,10 @@ jobs:
         env:
           EXPECTED_REVISION: ${{ github.sha }}
         run: bash scripts/container-smoke.sh fullish:ci "$EXPECTED_REVISION"
+      - name: Verify sandbox worker behavior in an isolated container
+        run: |
+          docker build -f deploy/Dockerfile.sandbox -t fullish-sandbox:ci .
+          python3 scripts/sandbox-smoke.py --worker-image fullish-sandbox:ci
       - name: Export the verified image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker save --output fullish-image.tar fullish:ci

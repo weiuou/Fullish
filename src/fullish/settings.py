@@ -80,3 +80,36 @@ class DeploymentReportSettings:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise ValueError("DEPLOY_REPORT_REPOSITORY must be owner/repository")
         return cls(group, repository)
+
+
+@dataclass(frozen=True)
+class ToolSettings:
+    allowed_groups: frozenset[str]
+    deepseek_key: str = field(default="", repr=False)
+    sandbox_socket: str | None = None
+    sandbox_token: str = field(default="", repr=False)
+
+    @classmethod
+    def from_env(cls) -> Self | None:
+        groups = frozenset(
+            x.strip() for x in os.environ.get("TOOLS_ALLOWED_GROUPS", "").split(",") if x.strip()
+        )
+        key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        socket = os.environ.get("SANDBOX_SOCKET", "").strip() or None
+        token = os.environ.get("SANDBOX_TOKEN", "").strip()
+        if not groups and not key and not socket and not token:
+            return None
+        if not groups or any(not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", group) for group in groups):
+            raise ValueError("Tools require explicit TOOLS_ALLOWED_GROUPS OpenIDs")
+        if key and (len(key) > 2048 or any(not 33 <= ord(char) <= 126 for char in key)):
+            raise ValueError("DEEPSEEK_API_KEY must be a single ASCII token")
+        if bool(socket) != bool(token) or (
+            socket
+            and (not socket.startswith("/") or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token))
+        ):
+            raise ValueError(
+                "SANDBOX_SOCKET requires an absolute Unix socket path and SANDBOX_TOKEN (32+ chars)"
+            )
+        if not key and not socket:
+            return None
+        return cls(groups, key, socket, token)

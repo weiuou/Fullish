@@ -10,6 +10,7 @@ from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sen
 from fullish.model import ChatModel
 from fullish.model import Turn as ModelTurn
 from fullish.telemetry import emit, message_trace, reference, trace_id
+from fullish.tools import ToolContext
 
 HISTORY_MESSAGES = 60
 HISTORY_CHARS = 6000
@@ -180,7 +181,11 @@ class Conversations:
                     omitted_images=sum(len(item["images"]) for item in group.turns)
                     - (MAX_IMAGES - remaining),
                 )
-                return await self.model.reply(history[::-1], addressed=called)
+                return await self.model.reply(
+                    history[::-1],
+                    addressed=called,
+                    context=ToolContext(group_id, message.sender.id, message_id),
+                )
             finally:
                 self.active -= 1
 
