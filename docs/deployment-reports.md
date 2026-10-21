@@ -25,6 +25,8 @@ DEPLOY_REPORT_REPOSITORY=weiuou/Fullish
 
 留空 `QQ_DEPLOY_REPORT_GROUP_OPENID` 即禁用。普通 QQ 群号不能直接作为这个配置值。机器人必须已加入目标群、配置 QQ 和 AI 凭证，且群内允许机器人主动发送消息；代码会先查询 `allow_proactive_msg`，关闭时不消耗摘要模型请求，也不冒充对群消息的被动回复。
 
+群状态查询复用适配器的鉴权和传输，但只校验所需的布尔权限字段，兼容平台返回空值或新增值的其他状态字段；权限字段缺失或格式错误时不会继续发送。
+
 服务器脚本需要更新一次：上传当前仓库的 `scripts/` 和 `deploy/`，按 [SSH 部署说明](deployment-ssh.md) 重新运行 `server-setup.sh` 安装基础设施，再发布包含汇报功能的镜像。原有运行凭证会保留；此后日常部署自动触发汇报，不需要修改 GitHub Secrets 或扩大受限 SSH 命令权限。
 
 应用容器依然使用现有只读文件系统和网络入口。服务器通过 `docker exec` 中的 CLI 请求容器内部 `/internal/deployment-report`；该接口要求由 QQ 应用密钥派生的专用 HMAC token，并核对当前运行 revision。CLI 会短暂等待 QQ 连接；已经开始汇报或发送失败时不自动重试，以免发生不确定的重复发送。

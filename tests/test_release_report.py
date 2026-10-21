@@ -2,13 +2,13 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from nonebot.adapters.qq import Bot
+from nonebot.drivers import URL
 from pydantic import ValidationError
 
 from fullish.model import ChatModel
@@ -18,6 +18,7 @@ from fullish.release_report import (
     ReportError,
     ReportRequest,
     install_report_route,
+    proactive_messages_allowed,
     report_token,
     summarize,
 )
@@ -134,8 +135,10 @@ def test_report_delivery_and_failure_boundaries(case: str) -> None:
         if case == "model_failure":
             reporter.complete.side_effect = RuntimeError("upstream-private-body")
         bot = Mock(spec=Bot)
-        bot.get_group_bot_state = AsyncMock(
-            return_value=SimpleNamespace(allow_proactive_msg=case != "disabled")
+        bot.adapter = Mock()
+        bot.adapter.get_api_base.return_value = URL("https://api.sgroup.qq.com")
+        bot._request = AsyncMock(
+            return_value={"allow_proactive_msg": case != "disabled", "recv_msg_setting": ""}
         )
         bot.post_group_messages = AsyncMock()
         request = ReportRequest(
@@ -210,6 +213,28 @@ def test_internal_route_requires_authentication_matching_revision_and_connected_
                 )
                 assert sent.json() == {"outcome": "sent"}
         reporter.send.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("allowed", [True, False, None, "false", 1])
+def test_group_permission_ignores_unrelated_enum_values_but_requires_a_boolean(allowed) -> None:
+    async def run() -> None:
+        bot = Mock(spec=Bot)
+        bot.adapter = Mock()
+        bot.adapter.get_api_base.return_value = URL("https://api.sgroup.qq.com")
+        bot._request = AsyncMock(
+            return_value={"allow_proactive_msg": allowed, "recv_msg_setting": ""}
+        )
+        bot.get_group_bot_state = AsyncMock(side_effect=AssertionError("strict adapter enum used"))
+        if isinstance(allowed, bool):
+            assert await proactive_messages_allowed(bot, GROUP) is allowed
+        else:
+            with pytest.raises(ReportError, match="invalid_group_permission_response"):
+                await proactive_messages_allowed(bot, GROUP)
+        request = bot._request.call_args.args[0]
+        assert str(request.url) == f"https://api.sgroup.qq.com/v2/groups/{GROUP}/bot_state"
+        bot.get_group_bot_state.assert_not_awaited()
 
     asyncio.run(run())
 

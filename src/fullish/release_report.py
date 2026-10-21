@@ -16,6 +16,7 @@ import httpx
 import nonebot
 from fastapi import FastAPI, Header, HTTPException
 from nonebot.adapters.qq import Bot
+from nonebot.drivers import Request
 from pydantic import BaseModel, Field
 
 from fullish.model import ChatModel
@@ -44,6 +45,21 @@ class ReportError(RuntimeError):
 
 def report_token(secret: str) -> str:
     return hmac.new(secret.encode(), b"fullish-deployment-report-v1", hashlib.sha256).hexdigest()
+
+
+async def proactive_messages_allowed(bot: Bot, group_openid: str) -> bool:
+    # QQ can return recv_msg_setting="", outside the adapter's current Literal enum.
+    # Reuse its authenticated transport, but validate only the permission we need.
+    response = await bot._request(
+        Request(
+            "GET",
+            bot.adapter.get_api_base().joinpath("v2", "groups", group_openid, "bot_state"),
+        )
+    )
+    allowed = response.get("allow_proactive_msg") if isinstance(response, dict) else None
+    if not isinstance(allowed, bool):
+        raise ReportError("invalid_group_permission_response")
+    return allowed
 
 
 class GitHubHistory:
@@ -167,8 +183,7 @@ class DeploymentReporter:
 
     async def send(self, request: ReportRequest, bot: Bot) -> str:
         async with self.lock, asyncio.timeout(REPORT_TIMEOUT):
-            state = await bot.get_group_bot_state(group_id=self.settings.group_openid)
-            if not state.allow_proactive_msg:
+            if not await proactive_messages_allowed(bot, self.settings.group_openid):
                 raise ReportError("proactive_messages_disabled")
             previous, current = request.previous, request.current
             status = "部署成功" if not request.rollback else "回滚成功"
