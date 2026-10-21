@@ -16,6 +16,8 @@
 
 仅文档变更不会产生新镜像，也不会改变服务器上 `/version` 返回的构建提交号。
 
+配置目标群并更新服务器部署脚本后，成功部署会触发 [QQ 部署汇报](deployment-reports.md)。汇报使用实际替换前后的镜像 revision；两次部署之间的文档提交也纳入摘要，不单独为文档变更发部署通知。
+
 自动更新流程图由内置 ImageGen 生成，原始提示词保存在 [图片说明](assets/deployment-flow.prompt.md)。部署细节见 [SSH 部署](deployment-ssh.md) 或 [TAT 部署](deployment.md)。
 
 ## 依赖自动更新

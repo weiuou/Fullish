@@ -46,8 +46,16 @@ case "${1:-}" in
         [[ ${2:-} == inspect ]] || exit 2
         shift 2
         if [[ ${1:-} == --format ]]; then
-            [[ ${2:-} == '{{json .Config.Healthcheck.Test}}' ]] || exit 2
-            if matches missing-healthcheck "$3"; then echo null; else echo '["CMD","probe"]'; fi
+            case ${2:-} in
+                '{{json .Config.Healthcheck.Test}}')
+                    if matches missing-healthcheck "$3"; then echo null; else echo '["CMD","probe"]'; fi
+                    ;;
+                '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+                    revision_file="$state/revision-${3##*@sha256:}"
+                    if [[ -f $revision_file ]]; then cat "$revision_file"; else echo dev; fi
+                    ;;
+                *) exit 2 ;;
+            esac
         else
             echo '{}'
         fi
@@ -55,6 +63,13 @@ case "${1:-}" in
     inspect)
         [[ ${2:-} == --format ]] || exit 2
         inspect_container "$3"
+        ;;
+    exec)
+        [[ -f $FULLISH_ROOT/state/release.env ]] || exit 2
+        grep -qx "CURRENT_IMAGE=$FULLISH_IMAGE" "$FULLISH_ROOT/state/release.env" || exit 2
+        [[ $(< "$state/container-health") == healthy ]] || exit 2
+        printf '%s\n' "$*" >> "$state/report-calls.log"
+        [[ ! -f $state/report-fails ]] || exit 1
         ;;
     compose)
         shift
@@ -340,6 +355,48 @@ assert_running "$image_a"
 assert_no_stop
 cmp -s "$FAKE_DOCKER_STATE/runtime.before" "$FULLISH_ROOT/runtime.env" || fail 'invalid config changed host'
 unset FULLISH_QQ_CONFIG_FILE
+pass
+
+new_case reporting_follows_successful_state_commit
+seed_release "$image_a"
+printf '%040d\n' 1 > "$FAKE_DOCKER_STATE/revision-$digest_a"
+printf '%040d\n' 2 > "$FAKE_DOCKER_STATE/revision-$digest_b"
+run_deploy "$image_b"
+assert_success
+assert_state "$image_b" "$image_a"
+grep -q -- "--previous $(printf '%040d' 1) --current $(printf '%040d' 2)" "$FAKE_DOCKER_STATE/report-calls.log" || fail 'report did not compare the actual deployed revisions'
+pass
+
+new_case failed_deployment_does_not_report_success
+seed_release "$image_a"
+printf '%040d\n' 1 > "$FAKE_DOCKER_STATE/revision-$digest_a"
+printf '%040d\n' 2 > "$FAKE_DOCKER_STATE/revision-$digest_b"
+printf '%s\n' "$image_b" > "$FAKE_DOCKER_STATE/fail-up"
+run_deploy "$image_b"
+assert_failure
+[[ ! -f $FAKE_DOCKER_STATE/report-calls.log ]] || fail 'failed deployment sent a success report'
+pass
+
+new_case report_failure_does_not_rollback_healthy_release
+seed_release "$image_a"
+printf '%040d\n' 1 > "$FAKE_DOCKER_STATE/revision-$digest_a"
+printf '%040d\n' 2 > "$FAKE_DOCKER_STATE/revision-$digest_b"
+touch "$FAKE_DOCKER_STATE/report-fails"
+run_deploy "$image_b"
+assert_success
+assert_state "$image_b" "$image_a"
+assert_running "$image_b"
+grep -q 'QQ deployment report failed' "$FAKE_DOCKER_STATE/output" || fail 'report failure was hidden'
+pass
+
+new_case rollback_report_uses_the_replaced_revision
+seed_release "$image_b" "$image_a"
+printf '%040d\n' 1 > "$FAKE_DOCKER_STATE/revision-$digest_a"
+printf '%040d\n' 2 > "$FAKE_DOCKER_STATE/revision-$digest_b"
+run_deploy --rollback
+assert_success
+assert_state "$image_a" "$image_b"
+grep -q -- "--previous $(printf '%040d' 2) --current $(printf '%040d' 1) --rollback" "$FAKE_DOCKER_STATE/report-calls.log" || fail 'rollback report used the wrong direction'
 pass
 
 printf 'All %s deployment transaction scenarios passed.\n' "$case_count"

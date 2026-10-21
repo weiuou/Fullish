@@ -1,6 +1,7 @@
 """Explicit application settings; credentials never appear in representations."""
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Self
 from urllib.parse import urlsplit
@@ -59,3 +60,23 @@ class QQSettings:
             x.strip() for x in os.environ.get("QQ_ALLOWED_GROUPS", "").split(",") if x.strip()
         )
         return cls(app_id, secret, groups)
+
+
+@dataclass(frozen=True)
+class DeploymentReportSettings:
+    group_openid: str
+    repository: str
+
+    @classmethod
+    def from_env(cls) -> Self | None:
+        group = os.environ.get("QQ_DEPLOY_REPORT_GROUP_OPENID", "").strip()
+        if not group:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", group):
+            raise ValueError(
+                "QQ_DEPLOY_REPORT_GROUP_OPENID must be a group OpenID, not a QQ number"
+            )
+        repository = os.environ.get("DEPLOY_REPORT_REPOSITORY", "weiuou/Fullish").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+            raise ValueError("DEPLOY_REPORT_REPOSITORY must be owner/repository")
+        return cls(group, repository)

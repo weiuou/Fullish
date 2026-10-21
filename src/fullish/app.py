@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from fullish import __version__
 from fullish.conversation import Conversations
 from fullish.model import ChatModel
-from fullish.settings import ModelSettings, QQSettings
+from fullish.settings import DeploymentReportSettings, ModelSettings, QQSettings
 from fullish.telemetry import emit
 
 
@@ -20,6 +20,9 @@ def create_app() -> FastAPI:
     """Initialize the process-wide NoneBot driver once, without external credentials."""
     model_settings = ModelSettings.from_env()
     qq_settings = QQSettings.from_env()
+    report_settings = DeploymentReportSettings.from_env()
+    if report_settings and (not qq_settings or not model_settings):
+        raise ValueError("Deployment reports require QQ and the AI backend")
     if qq_settings and not model_settings:
         raise ValueError("Configure the AI backend before enabling QQ")
     qq_bots = []
@@ -59,6 +62,12 @@ def create_app() -> FastAPI:
 
         driver.register_adapter(GroupOnlyAdapter)
         install_group_handler(Conversations(model, allowed_groups=qq_settings.allowed_groups))
+        if report_settings:
+            from fullish.release_report import DeploymentReporter, install_report_route
+
+            install_report_route(
+                app, DeploymentReporter(report_settings, model), qq_settings, revision
+            )
 
     def qq_connected() -> bool:
         return bool(qq_settings and qq_settings.app_id in nonebot.get_bots())
