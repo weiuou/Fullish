@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch
 from nonebot.adapters.qq import Adapter, Bot, Message, MessageSegment
 from nonebot.adapters.qq.models import Dispatch
 
-from fullish.qq import GroupOnlyAdapter, describe
+from fullish.collection.qq import describe
+from fullish.qq import GroupOnlyAdapter
 
 
 def test_private_dispatch_is_discarded() -> None:

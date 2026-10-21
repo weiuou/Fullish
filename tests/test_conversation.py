@@ -25,7 +25,8 @@ def test_group_context_deduplication_and_send_ack() -> None:
             assert await conversations.receive("a", "1", "alice", "聊编程", addressed=False) is None
             assert await conversations.receive("a", "2", "bob", "Fullish 怎么看", addressed=False)
             turns = reply.call_args.args[0]
-            assert "alice" in turns[0]["content"] and "bob" in turns[1]["content"]
+            assert turns[0]["sender_id"] == "alice" and turns[1]["sender_id"] == "bob"
+            assert turns[0]["content"] == "聊编程" and turns[1]["content"] == "Fullish 怎么看"
             assert all(t["role"] == "user" for t in conversations.groups["a"].turns)
             conversations.sent("a", "可以试试")
             assert conversations.groups["a"].turns[-1]["role"] == "assistant"
@@ -84,12 +85,13 @@ def test_image_only_messages_join_context_and_reach_the_model() -> None:
             )
             assert await conversations.receive("a", "2", "bob", "Fullish 看下", addressed=False)
             turns = reply.call_args.args[0]
-            assert turns[0]["content"] == "群成员 alice: [图片]"
+            assert turns[0]["content"] == "[图片]"
+            assert turns[0]["sender_id"] == "alice"
             assert turns[0]["images"] == ["http://cdn/1.jpg"]
             assert turns[1]["images"] == []
             # Messages without text are retained even without a mention or image.
             assert await conversations.receive("a", "3", "bob", "   ", addressed=False) is None
-            assert conversations.groups["a"].turns[-1]["content"] == "群成员 bob: [无文字内容]"
+            assert conversations.groups["a"].turns[-1]["content"] == "[无文字内容]"
         finally:
             await model.close()
 
@@ -179,14 +181,16 @@ def test_images_keep_their_senders_when_one_download_fails() -> None:
             messages = payloads[0]["messages"]
             for index, sender in ((1, "alice"), (2, "bob")):
                 content = messages[index]["content"]
-                assert sender in content[0]["text"]
+                envelope = json.loads(content[0]["text"])
+                assert envelope["sender"]["id"] == sender
+                assert envelope["text"] in {"[图片][图片]", "[图片]"}
                 assert len(content) == 2
                 data = content[1]["image_url"]["url"].split(",", 1)[1]
                 assert base64.b64decode(data) == png + f"/{sender}.png".encode()
-            assert messages[3] == {
-                "role": "user",
-                "content": "群成员 carol: Fullish，Alice 发的是哪张？",
-            }
+            assert messages[3]["role"] == "user"
+            envelope = json.loads(messages[3]["content"])
+            assert envelope["sender"]["id"] == "carol"
+            assert envelope["text"] == "Fullish，Alice 发的是哪张？"
         finally:
             await model.close()
 

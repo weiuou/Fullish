@@ -4,11 +4,12 @@ import asyncio
 import time
 
 from nonebot import on_message
-from nonebot.adapters.qq import Adapter, Bot, Message
+from nonebot.adapters.qq import Adapter, Bot
 from nonebot.adapters.qq.event import Event, GroupMessageCreateEvent
 from nonebot.adapters.qq.exception import ActionFailed
 from nonebot.adapters.qq.models import Dispatch
 
+from fullish.collection.qq import collect_group_message
 from fullish.conversation import Conversations
 from fullish.model import ModelError
 from fullish.telemetry import elapsed_ms, emit, message_trace
@@ -36,25 +37,6 @@ class GroupOnlyAdapter(Adapter):
         return event
 
 
-def describe(message: Message) -> tuple[str, list[str]]:
-    """Flatten a message into context text plus the image URLs it carries."""
-    parts: list[str] = []
-    images: list[str] = []
-    for segment in message:
-        if segment.type == "text":
-            parts.append(segment.data["text"])
-        elif segment.type == "emoji":
-            parts.append("[表情]")
-        elif segment.type == "mention_user":
-            name = segment.data.get("username")
-            parts.append(f"@{name}" if name else "@某人")
-        elif segment.type == "image":
-            parts.append("[图片]")
-            if url := segment.data.get("url"):
-                images.append(url)
-    return "".join(parts).strip(), images
-
-
 def install_group_handler(conversations: Conversations) -> None:
     async def is_group(event: GroupMessageCreateEvent) -> bool:
         return True
@@ -74,23 +56,16 @@ async def handle_group(
         phase = "parse"
         outcome = "failed"
         try:
-            text, images = describe(event.get_message())
+            message = collect_group_message(event)
             emit(
                 "qq.message.parsed",
-                text_chars=len(text),
-                image_count=len(images),
+                text_chars=len(message.content.text),
+                image_count=len(message.content.image_urls),
                 segment_types=[segment.type for segment in event.get_message()],
-                addressed=event.is_tome(),
+                addressed=message.addressed,
             )
             phase = "conversation"
-            reply = await conversations.receive(
-                event.group_openid,
-                event.id,
-                event.author.member_openid,
-                text,
-                addressed=event.is_tome(),
-                images=images,
-            )
+            reply = await conversations.receive_message(message)
             if reply:
                 phase = "send"
                 send_start = time.monotonic()
