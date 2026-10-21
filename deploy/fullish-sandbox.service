@@ -1,0 +1,33 @@
+[Unit]
+Description=Fullish private persistent sandbox broker
+After=network.target
+
+[Service]
+Type=simple
+User=fullish-sandbox
+Group=fullish-tools
+EnvironmentFile=/etc/fullish-sandbox.env
+ExecStart=/usr/bin/python3 -I /opt/fullish-sandbox/server.py
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=fullish-sandbox
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+TasksMax=32
+MemoryMax=128M
+ReadWritePaths=/run/fullish-sandbox
+
+[Install]
+WantedBy=multi-user.target
