@@ -8,7 +8,13 @@ from pathlib import Path
 
 
 def run(*args: str, **kwargs) -> str:
-    return subprocess.check_output(args, text=True, timeout=300, **kwargs).strip()
+    result = subprocess.run(
+        args, text=True, timeout=300, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs
+    )
+    if result.returncode:
+        print(result.stdout, flush=True)
+        raise subprocess.CalledProcessError(result.returncode, args)
+    return result.stdout.strip()
 
 
 def main() -> None:
@@ -29,6 +35,8 @@ def main() -> None:
         "fullish-sandbox",
         "--",
         "env",
+        "-i",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
         "HOME=/var/lib/fullish-sandbox",
         f"XDG_RUNTIME_DIR=/run/user/{uid}",
         "docker",
