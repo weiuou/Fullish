@@ -62,11 +62,19 @@ class Group:
 
 
 class Conversations:
-    def __init__(self, model: ReplyModel, *, allowed_groups: frozenset[str] = frozenset()):
+    def __init__(
+        self,
+        model: ReplyModel,
+        *,
+        allowed_groups: frozenset[str] = frozenset(),
+        min_interval: float = 5,
+    ):
         self.model = model
         self.allowed_groups = allowed_groups
         self.groups: OrderedDict[str, Group] = OrderedDict()
         self.active = 0
+        self.capacity = asyncio.Semaphore(4)
+        self.min_interval = min_interval
 
     async def receive(
         self,
@@ -138,28 +146,27 @@ class Conversations:
             emit("conversation.skipped", reason="duplicate")
             return None
         group.seen.append(message_id)
-        group.turns.append(turn("user", text, images=list(images), message=message))
+        current_turn = turn("user", text, images=list(images), message=message)
+        group.turns.append(current_turn)
         self._trim(group.turns)
         emit("context.recorded", role="user", history_turns=len(group.turns))
         # Initially speak only when addressed or named. Other messages provide context.
-        reason = (
-            "context_only"
-            if not called
-            else "group_busy"
-            if group.lock.locked()
-            else "global_capacity"
-            if self.active >= 4
-            else None
-        )
-        if reason:
-            emit("conversation.skipped", reason=reason)
+        if not called:
+            emit("conversation.skipped", reason="context_only")
             return None
-        if now - group.last_attempt < 5:
-            emit("conversation.skipped", reason="cooldown")
-            return None
-        group.last_attempt = now
+        if group.lock.locked():
+            emit("conversation.waiting", reason="group_busy")
         async with group.lock:
+            delay = self.min_interval - (time.monotonic() - group.last_attempt)
+            if delay > 0:
+                emit("conversation.waiting", reason="cooldown", delay_ms=round(delay * 1000))
+                await asyncio.sleep(delay)
+            if self.capacity.locked():
+                emit("conversation.waiting", reason="global_capacity")
+            await self.capacity.acquire()
             self.active += 1
+            group.last_attempt = time.monotonic()
+            now = time.monotonic()
             try:
                 # Explicit quotes get the picture budget first, including pictures
                 # whose original message was never received or has aged out.
@@ -177,7 +184,14 @@ class Conversations:
                     return chosen[::-1]
 
                 image_count = 0
-                for item in reversed(group.turns):
+                # Keep this request's target last even for concurrent non-QQ callers.
+                snapshot = [
+                    item
+                    for item in group.turns
+                    if item is not current_turn
+                    and (item["role"] == "assistant" or item["created"] <= current_turn["created"])
+                ] + [current_turn]
+                for item in reversed(snapshot):
                     source = item["message"]
                     quote = source.reply if source else None
                     recent = now - item["created"] <= IMAGE_WINDOW_SECONDS
@@ -205,7 +219,7 @@ class Conversations:
                     "conversation.generating",
                     trigger="mention" if addressed else "name",
                     history_turns=len(history),
-                    context_trace_ids=[item["trace_id"] for item in group.turns],
+                    context_trace_ids=[item["trace_id"] for item in snapshot],
                     image_count=len(selected),
                     omitted_images=image_count - len(selected),
                 )
@@ -216,6 +230,7 @@ class Conversations:
                 )
             finally:
                 self.active -= 1
+                self.capacity.release()
 
     def sent(self, group_id: str, reply: Reply) -> None:
         # Record only replies that QQ accepted, not failed sends.

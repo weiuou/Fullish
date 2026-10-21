@@ -266,7 +266,7 @@ def test_decisions_explain_context_only_allowlist_and_cooldown(flow) -> None:
     async def run() -> None:
         model = ChatModel(ModelSettings("http://localhost/v1", "test"))
         model.reply = AsyncMock(return_value="好")
-        conversations = Conversations(model, allowed_groups=frozenset({"g"}))
+        conversations = Conversations(model, allowed_groups=frozenset({"g"}), min_interval=0.01)
         try:
             await conversations.receive("other", "1", "u", "", addressed=True)
             await conversations.receive("g", "1", "u", "", addressed=False)
@@ -276,9 +276,11 @@ def test_decisions_explain_context_only_allowlist_and_cooldown(flow) -> None:
             assert [r["reason"] for r in flow if r["stage"] == "conversation.skipped"] == [
                 "group_not_allowed",
                 "context_only",
-                "cooldown",
             ]
-            model.reply.assert_awaited_once()
+            assert any(
+                r.get("reason") == "cooldown" for r in flow if r["stage"] == "conversation.waiting"
+            )
+            assert model.reply.await_count == 2
         finally:
             await model.close()
 

@@ -38,7 +38,7 @@ def test_group_context_deduplication_and_send_ack() -> None:
     asyncio.run(run())
 
 
-def test_busy_group_has_one_request_and_other_groups_are_isolated() -> None:
+def test_busy_group_waits_and_other_groups_are_isolated() -> None:
     async def run() -> None:
         started = asyncio.Event()
         finish = asyncio.Event()
@@ -51,16 +51,22 @@ def test_busy_group_has_one_request_and_other_groups_are_isolated() -> None:
         model = ChatModel(ModelSettings("http://localhost/v1", "test"))
         reply = AsyncMock(side_effect=respond)
         model.reply = reply
-        conversations = Conversations(model)
+        conversations = Conversations(model, min_interval=0)
         try:
             first = asyncio.create_task(conversations.receive("a", "1", "u", "hi", addressed=True))
             await started.wait()
-            assert await conversations.receive("a", "2", "v", "hello", addressed=True) is None
+            second = asyncio.create_task(
+                conversations.receive("a", "2", "v", "hello", addressed=True)
+            )
+            await asyncio.sleep(0)
+            assert not second.done()
             assert await conversations.receive("b", "1", "w", "旁观", addressed=False) is None
             finish.set()
             assert await first == "好"
-            assert reply.call_count == 1
-            assert len(reply.call_args.args[0]) == 1
+            assert await second == "好"
+            assert reply.call_count == 2
+            assert len(reply.call_args_list[0].args[0]) == 1
+            assert reply.call_args.args[0][-1]["sender_id"] == "v"
             assert conversations.active == 0
             assert "w" not in str(conversations.groups["a"].turns)
         finally:
@@ -269,6 +275,49 @@ def test_model_failure_releases_capacity() -> None:
             assert conversations.active == 0
             assert not conversations.groups["a"].lock.locked()
         finally:
+            await model.close()
+
+    asyncio.run(run())
+
+
+def test_global_capacity_waits_for_all_addressed_groups_instead_of_dropping():
+    async def run():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        running = 0
+        maximum = 0
+
+        async def respond(*args, **kwargs):
+            nonlocal running, maximum
+            running += 1
+            maximum = max(maximum, running)
+            if running == 4:
+                started.set()
+            try:
+                await release.wait()
+                return "done"
+            finally:
+                running -= 1
+
+        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model.reply = AsyncMock(side_effect=respond)
+        conversations = Conversations(model, min_interval=0)
+        tasks = [
+            asyncio.create_task(conversations.receive(str(i), "message", "u", "hi", addressed=True))
+            for i in range(5)
+        ]
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            assert conversations.active == 4
+            assert model.reply.await_count == 4
+            assert not tasks[4].done()
+            release.set()
+            assert await asyncio.gather(*tasks) == ["done"] * 5
+            assert maximum == 4 and conversations.active == 0
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await model.close()
 
     asyncio.run(run())
