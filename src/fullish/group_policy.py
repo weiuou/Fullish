@@ -73,14 +73,17 @@ class GroupPolicies:
 
     def sandbox_groups(self) -> frozenset[str]:
         try:
-            data = self.read()
-            return frozenset(
-                group
-                for group, overrides in data["groups"].items()
-                if Features(**{**data["defaults"], **overrides}).allows("sandbox")
-            )
+            return self.require_sandbox_groups()
         except PolicyError:
             return frozenset()
+
+    def require_sandbox_groups(self) -> frozenset[str]:
+        data = self.read()
+        return frozenset(
+            group
+            for group, overrides in data["groups"].items()
+            if Features(**{**data["defaults"], **overrides}).allows("sandbox")
+        )
 
     def write(self, data: dict) -> None:
         self.validate(data)

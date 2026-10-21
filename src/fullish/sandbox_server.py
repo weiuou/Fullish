@@ -64,7 +64,9 @@ class Sandboxes:
     def reconcile(self) -> None:
         if not self.policies:
             return
-        keep = {self.name(group) for group in self.groups}
+        # Destructive reconciliation requires a valid snapshot, not a fail-closed
+        # empty allowlist caused by a damaged or unavailable policy file.
+        keep = {self.name(group) for group in self.policies.require_sandbox_groups()}
         names = self.docker(
             [
                 "container",

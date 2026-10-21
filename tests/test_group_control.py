@@ -277,6 +277,11 @@ def test_broker_reads_same_policy_and_reclaims_only_disabled_sandbox_names(contr
     broker.reconcile()
     removals = [call.args[0] for call in broker.docker.call_args_list if call.args[0][0] == "rm"]
     assert removals == [["rm", "--force", broker.name(GROUP)]]
+    broker.docker.reset_mock()
+    control.policies.path.write_text("broken")
+    with pytest.raises(PolicyError):
+        broker.reconcile()
+    broker.docker.assert_not_called()
 
 
 def test_restart_does_not_regrant_legacy_access_after_policy_is_lost(control):
