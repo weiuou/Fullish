@@ -50,7 +50,10 @@ systemctl daemon-reload
 systemctl start "user@$sandbox_uid.service"
 user_command=(runuser -u fullish-sandbox -- env -i PATH=/usr/local/bin:/usr/bin:/bin "HOME=$sandbox_home" USER=fullish-sandbox LOGNAME=fullish-sandbox "XDG_RUNTIME_DIR=/run/user/$sandbox_uid" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$sandbox_uid/bus")
 if [[ ! -f $sandbox_home/.config/systemd/user/docker.service ]]; then
-    "${user_command[@]}" dockerd-rootless-setuptool.sh install --force
+    if ! "${user_command[@]}" dockerd-rootless-setuptool.sh install --force; then
+        "${user_command[@]}" journalctl --user --unit docker.service -n 40 --no-pager >&2 || true
+        die 'Dedicated rootless Docker initialization failed.'
+    fi
 fi
 # Configuration changes are detected, so repeated setup does not restart a healthy sandbox.
 changed=$(python3 - "$sandbox_home" "$sandbox_uid" <<'PY'

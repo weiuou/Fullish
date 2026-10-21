@@ -43,16 +43,17 @@ def main() -> None:
         "--host",
         f"unix:///run/user/{uid}/docker.sock",
     ]
-    run(
-        *docker,
-        "build",
-        "-f",
-        str(root / "deploy/Dockerfile.sandbox"),
-        "-t",
-        "fullish-sandbox:integration",
-        str(root),
-    )
-    pinned = run(*docker, "image", "inspect", "--format", "{{.Id}}", "fullish-sandbox:integration")
+    # Load the exact worker image already verified in this job. The dedicated
+    # user needs neither access to the runner's checkout nor another image pull.
+    with subprocess.Popen(
+        ["docker", "save", "fullish-sandbox:ci"], stdout=subprocess.PIPE
+    ) as saved:
+        assert saved.stdout is not None
+        subprocess.run([*docker, "load"], stdin=saved.stdout, check=True, timeout=120)
+        saved.stdout.close()
+        if saved.wait(timeout=10):
+            raise RuntimeError("Worker image export failed")
+    pinned = run(*docker, "image", "inspect", "--format", "{{.Id}}", "fullish-sandbox:ci")
     run("bash", str(root / "scripts/server-setup.sh"), "ghcr.io/example/fullish")
     group = "synthetic-integration-group"
     setup = ["bash", str(root / "scripts/sandbox-setup.sh"), group, pinned]
