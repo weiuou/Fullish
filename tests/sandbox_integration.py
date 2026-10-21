@@ -13,6 +13,32 @@ def run(*args: str, **kwargs) -> str:
     )
     if result.returncode:
         print(result.stdout, flush=True)
+        subprocess.run(
+            ["journalctl", "-u", "fullish-sandbox.service", "-n", "35", "--no-pager"],
+            check=False,
+            timeout=10,
+        )
+        uid = subprocess.check_output(["id", "-u", "fullish-sandbox"], text=True).strip()
+        docker = [
+            "runuser",
+            "-u",
+            "fullish-sandbox",
+            "--",
+            "env",
+            "-i",
+            "PATH=/usr/bin:/bin",
+            "HOME=/var/lib/fullish-sandbox",
+            "docker",
+            "--host",
+            f"unix:///run/user/{uid}/docker.sock",
+        ]
+        rows = subprocess.run(docker + ["ps", "-aq"], text=True, capture_output=True, timeout=10)
+        for identifier in rows.stdout.split():
+            subprocess.run(
+                docker + ["inspect", "--format", "{{json .State}}", identifier],
+                check=False,
+                timeout=10,
+            )
         raise subprocess.CalledProcessError(result.returncode, args)
     return result.stdout.strip()
 
