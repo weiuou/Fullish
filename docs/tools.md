@@ -106,4 +106,4 @@ sudo python3 scripts/sandbox-smoke.py
 
 停用机器人沙箱工具时清空 `/opt/fullish/runtime.env` 的 `SANDBOX_SOCKET` 和 `SANDBOX_TOKEN` 后正常部署。停 broker 不会自动销毁已常驻的任务容器；完全回收时，以专用用户仅删除名称以 `fullish-sandbox-` 开头、经核对属于本功能的容器，再停专用 rootless daemon。不要操作生产 daemon。
 
-单元测试继续使用合成身份验证权限、限流、认证和配置拒绝；CI 的真实 rootless gVisor 验收和部署机上的发布前后验收共同覆盖运行时与挂载集成。
+单元测试继续使用合成身份验证权限、限流、认证和配置拒绝；CI 使用与部署机一致的 Docker Engine / Rootless Extras 29.9.1，避免 runner 预装 Moby 与新版 RootlessKit 混用。真实 rootless gVisor 验收和部署机上的发布前后验收共同覆盖运行时与挂载集成。升级这些运行时组件时，应一起更新固定版本并通过完整验收。
