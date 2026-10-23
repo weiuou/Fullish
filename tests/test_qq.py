@@ -45,12 +45,14 @@ def test_message_content_keeps_stickers_and_images() -> None:
 def test_configured_qq_driver_and_model_lifecycle(tmp_path) -> None:
     # Isolate NoneBot's process-global driver, and prevent live QQ traffic in tests.
     code = """
+import os
 from unittest.mock import AsyncMock, patch
 import httpx
 import nonebot
 from fastapi.testclient import TestClient
 from fullish.app import create_app
 from fullish.qq import GroupOnlyAdapter
+os.environ.pop('AI_REPLY_POSTPROCESSING', None)
 with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
     app = create_app()
     adapter = nonebot.get_adapter(GroupOnlyAdapter)
@@ -85,7 +87,6 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
             "AI_BASE_URL": "http://localhost/v1",
             "AI_API_KEY": "fake-key",
             "AI_MODEL": "gemini-3.8-flash-high",
-            "AI_REPLY_POSTPROCESSING": "true",
             "AI_REPLY_MODEL": "expression-test-model",
             "QQ_ENABLED": "true",
             "QQ_APP_ID": "1234",

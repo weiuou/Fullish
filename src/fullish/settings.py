@@ -88,8 +88,9 @@ class ReplyPostprocessSettings:
             raise ValueError("AI_REPLY_STYLE must contain 1 to 2000 characters")
 
     @classmethod
-    def from_env(cls) -> Self | None:
-        enabled = os.environ.get("AI_REPLY_POSTPROCESSING", "false").strip().lower()
+    def from_env(cls, *, default_enabled: bool = False) -> Self | None:
+        default = "true" if default_enabled else "false"
+        enabled = os.environ.get("AI_REPLY_POSTPROCESSING", default).strip().lower()
         if enabled not in {"true", "false"}:
             raise ValueError("AI_REPLY_POSTPROCESSING must be true or false")
         if enabled == "false":

@@ -488,7 +488,7 @@ def test_conversation_runs_optional_processing_only_after_a_non_silent_draft(ena
     asyncio.run(run())
 
 
-def test_settings_are_opt_in_and_support_explicit_runtime_configuration(monkeypatch, tmp_path):
+def test_settings_support_backend_default_and_explicit_runtime_configuration(monkeypatch, tmp_path):
     for key in (
         "AI_REPLY_POSTPROCESSING",
         "AI_REPLY_MODEL",
@@ -499,6 +499,7 @@ def test_settings_are_opt_in_and_support_explicit_runtime_configuration(monkeypa
     ):
         monkeypatch.delenv(key, raising=False)
     assert ReplyPostprocessSettings.from_env() is None
+    assert ReplyPostprocessSettings.from_env(default_enabled=True) == ReplyPostprocessSettings()
     monkeypatch.setenv("AI_REPLY_POSTPROCESSING", "true")
     assert ReplyPostprocessSettings.from_env() == ReplyPostprocessSettings()
     monkeypatch.setenv("AI_REPLY_MODEL", "expression-model")
@@ -512,6 +513,7 @@ def test_settings_are_opt_in_and_support_explicit_runtime_configuration(monkeypa
     )
     monkeypatch.setenv("AI_REPLY_POSTPROCESSING", "false")
     assert ReplyPostprocessSettings.from_env() is None
+    assert ReplyPostprocessSettings.from_env(default_enabled=True) is None
 
 
 @pytest.mark.parametrize(

@@ -34,7 +34,7 @@ def create_app() -> FastAPI:
     qq_settings = QQSettings.from_env()
     report_settings = DeploymentReportSettings.from_env()
     tool_settings = ToolSettings.from_env()
-    reply_settings = ReplyPostprocessSettings.from_env()
+    reply_settings = ReplyPostprocessSettings.from_env(default_enabled=model_settings is not None)
     if reply_settings and not model_settings:
         raise ValueError("Reply postprocessing requires the AI backend")
     if tool_settings and not model_settings:

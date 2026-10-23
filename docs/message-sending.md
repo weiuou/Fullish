@@ -32,7 +32,7 @@ generated_picture = OutgoingMessage((Image(b"...actual image bytes..."),))
 
 `sending.postprocess.ReplyPostprocessor` 接在初版回答之后，用一次独立模型调用结合原稿、当前对话语境、明确配置的人设和可用素材决定表达形式。它可以保留原稿、适度口语化、加入 Unicode emoji，或组织少量短反应、主体说明和补充；拆成多条只是可选结果。没有按标点机械切分、固定三段、随机延迟或故意制造错字的逻辑。
 
-后处理默认关闭。启用后复用 `AI_BASE_URL`、`AI_API_KEY`、`AI_UNIX_SOCKET`，可单独指定模型：
+配置 AI 后端后，后处理默认开启；显式设置 `AI_REPLY_POSTPROCESSING=false` 可关闭。不配置 AI 时仍可运行 foundation 模式。后处理复用 `AI_BASE_URL`、`AI_API_KEY`、`AI_UNIX_SOCKET`，可单独指定模型：
 
 ```dotenv
 AI_REPLY_POSTPROCESSING=true
