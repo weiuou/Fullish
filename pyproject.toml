@@ -11,6 +11,7 @@ dependencies = [
     "httpx>=0.28.1,<1",
     "nonebot-adapter-qq>=1.7.3,<2",
     "nonebot2[fastapi,httpx,websockets]>=2.4.4,<3",
+    "pillow>=13.0,<14",
 ]
 
 [project.scripts]
