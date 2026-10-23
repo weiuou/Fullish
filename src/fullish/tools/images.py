@@ -179,7 +179,8 @@ class PublicImages:
                         response.raise_for_status()
                         raw = await self.read_body(response)
                         if sniff_image_type(raw):
-                            return {"kind": "image", "url": url, **assets.add(raw).metadata()}
+                            asset = await asyncio.to_thread(assets.add, raw)
+                            return {"kind": "image", "url": url, **asset.metadata()}
                         if "html" in response.headers.get("content-type", "").lower():
                             return {
                                 "kind": "page",

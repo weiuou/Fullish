@@ -69,6 +69,9 @@ IMAGE_GENERATION_RULES = """generate_image 是你可自主选择的表达工具�
 prompt 写清你要表达的画面；caption 是按角色习惯写的自然配文，可以为空表示不配文，
 需要沿用角色形象、改图或制作已有形象的表情包时，必须先看到参考图，再把其 image_id
 填入 reference_image_ids；聊天中看过的图片也要通过这个参数传给生图服务。
+GIF 会显示带时间标记的多帧动作序列，需结合所有抽样帧理解动作与含义。
+编辑接口会收到相同的动作序列图；生成提示词应说明这是同一主体的连续动作参考，
+结合过程画出用户要的单张表情，不要照抄时间标签或多格排版。
 没有拿到参考图时说明缺少参考，不要声称保留了原形象。图片 URL 不能代替参考图参数。
 别写等待提示、工具调用说明或思考过程。不要凭空声称图片已生成或输出虚构图片链接。
 工具会直接把实际生成的图片与配文同条发到群里，每轮最多生成一张。"""
@@ -671,7 +674,7 @@ class ChatModel:
         ):
             raise ModelError("image_invalid_tool_call")
         try:
-            references = tuple(images.get(ref).body for ref in refs)
+            references = tuple(images.get(ref).edit_body for ref in refs)
         except ImageAssetError as error:
             raise ModelError(str(error)) from None
         generated = (
@@ -728,10 +731,20 @@ class ChatModel:
                         if data:
                             if images is not None:
                                 try:
-                                    asset = images.add(base64.b64decode(data.split(",", 1)[1]))
+                                    asset = await asyncio.to_thread(
+                                        images.add, base64.b64decode(data.split(",", 1)[1])
+                                    )
                                 except ImageAssetError:
                                     continue
                                 available.extend(asset.vision())
+                            elif data.startswith("data:image/gif;"):
+                                try:
+                                    asset = await asyncio.to_thread(
+                                        ImageAssets().add, base64.b64decode(data.split(",", 1)[1])
+                                    )
+                                    available.extend(asset.vision())
+                                except ImageAssetError:
+                                    continue
                             else:
                                 available.append({"type": "image_url", "image_url": {"url": data}})
                     if available:

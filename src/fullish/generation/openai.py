@@ -9,6 +9,7 @@ import httpx
 
 from fullish.errors import ModelError
 from fullish.generation.base import GeneratedImage
+from fullish.generation.references import prepare_reference_images
 from fullish.media import sniff_image_type
 from fullish.settings import ImageGenerationSettings, ModelSettings
 from fullish.telemetry import elapsed_ms, emit, operation_trace
@@ -49,7 +50,12 @@ class OpenAIImageGenerator:
         with operation_trace():
             start = time.monotonic()
             model = await self.select_model()
-            emit("image_generation.started", model=model, timeout_seconds=self.settings.timeout)
+            emit(
+                "image_generation.started",
+                model=model,
+                timeout_seconds=self.settings.timeout,
+                reference_media_types=[sniff_image_type(body) for body in reference_images[:4]],
+            )
             try:
                 if (
                     not isinstance(prompt, str)
@@ -57,17 +63,10 @@ class OpenAIImageGenerator:
                     or len(prompt) > MAX_PROMPT_CHARS
                 ):
                     raise ModelError("image_invalid_prompt")
-                if (
-                    len(reference_images) > 4
-                    or sum(len(body) for body in reference_images) > 20 * 1024 * 1024
-                    or any(
-                        not body
-                        or len(body) > MAX_GENERATED_IMAGE_BYTES
-                        or sniff_image_type(body) not in {"image/png", "image/jpeg", "image/webp"}
-                        for body in reference_images
+                if reference_images:
+                    reference_images = await asyncio.to_thread(
+                        prepare_reference_images, reference_images
                     )
-                ):
-                    raise ModelError("image_invalid_reference")
                 request: dict = {"json": {"model": model, "prompt": prompt, "n": 1}}
                 endpoint = "images/generations"
                 if reference_images:
@@ -93,6 +92,7 @@ class OpenAIImageGenerator:
                         model=model,
                         mode="edit" if reference_images else "generate",
                         reference_count=len(reference_images),
+                        reference_media_types=[sniff_image_type(body) for body in reference_images],
                     )
                     async with self.client.stream(
                         "POST",

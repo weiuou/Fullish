@@ -316,7 +316,8 @@ class ToolRuntime:
                     body = base64.b64decode(downloaded["data"], validate=True)
                     if downloaded["size"] != len(body):
                         raise ToolError("invalid_sandbox_response")
-                    data = {"path": downloaded["path"], **images.add(body).metadata()}
+                    asset = await asyncio.to_thread(images.add, body)
+                    data = {"path": downloaded["path"], **asset.metadata()}
                 elif isinstance(arguments, ExecArgs) and self.sandbox:
                     response = await self.sandbox.post(
                         "/exec",
