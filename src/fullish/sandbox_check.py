@@ -1,6 +1,7 @@
 """Deployment gate: prove this bot image can execute through its configured socket."""
 
 import asyncio
+import base64
 import json
 import sys
 import uuid
@@ -19,16 +20,17 @@ async def check() -> None:
     policies = control.policies if control else None
     tools = ToolRuntime(settings, policies=policies)
     try:
-        # Synthetic identity, no model invocation, no QQ send and no workspace writes.
+        # Synthetic identity and probe files; no model invocation or QQ send.
         groups = policies.sandbox_groups() if policies else settings.allowed_groups
         if policies:
             policies.read()  # A damaged policy must fail deployment, not skip acceptance.
         for group in sorted(groups):
+            context = ToolContext(group, "deployment-check", "check-" + uuid.uuid4().hex)
             result = json.loads(
                 await tools.invoke(
                     "sandbox_exec",
                     json.dumps({"command": "printf fullish-sandbox-ready", "timeout_seconds": 3}),
-                    ToolContext(group, "deployment-check", "check-" + uuid.uuid4().hex),
+                    context,
                 )
             )
             data = result.get("data", {})
@@ -40,7 +42,33 @@ async def check() -> None:
                 and data.get("truncated") is False
             ):
                 raise RuntimeError("sandbox_acceptance_failed")
-        print("Configured sandbox passed execution and host cgroup validation.")
+            # Prove the installed broker AND pinned worker support binary exchange.
+            # Use only synthetic bytes and remove the probe before accepting deployment.
+            path = ".fullish-check-" + uuid.uuid4().hex + ".png"
+            body = b"\x89PNG\r\n\x1a\nfullish-file-check"
+            encoded = base64.b64encode(body).decode("ascii")
+            try:
+                uploaded = await tools.file_request(
+                    "/files/write", context, path=path, data=encoded
+                )
+                downloaded = await tools.file_request("/files/read", context, path=path)
+                if uploaded != {"path": path, "size": len(body)} or downloaded != {
+                    "path": path,
+                    "size": len(body),
+                    "data": encoded,
+                }:
+                    raise RuntimeError("sandbox_acceptance_failed")
+            finally:
+                removed = json.loads(
+                    await tools.invoke(
+                        "sandbox_exec",
+                        json.dumps({"command": "rm -f -- " + path, "timeout_seconds": 3}),
+                        context,
+                    )
+                )
+                if not removed.get("ok") or removed.get("data", {}).get("exit_code") != 0:
+                    raise RuntimeError("sandbox_acceptance_failed")
+        print("Configured sandbox passed execution, binary exchange and host cgroup validation.")
     finally:
         await tools.close()
 

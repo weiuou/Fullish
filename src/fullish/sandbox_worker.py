@@ -9,6 +9,12 @@ import sys
 import time
 from pathlib import Path
 
+if __package__:
+    from fullish.sandbox_files import MAX_FILE_JSON, exchange
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from sandbox_files import MAX_FILE_JSON, exchange  # pyright: ignore[reportMissingImports]
+
 OUTPUT_BYTES = 12000
 
 
@@ -117,6 +123,27 @@ def main() -> None:
         ]
         if others:
             raise SystemExit(1)
+    elif sys.argv[1:] == ["--file"]:
+        try:
+            raw = sys.stdin.buffer.read(MAX_FILE_JSON + 1)
+            if len(raw) > MAX_FILE_JSON:
+                raise ValueError("sandbox_file_too_large")
+            data = json.loads(raw)
+            if (
+                not isinstance(data, dict)
+                or data.get("operation") not in {"read", "write"}
+                or set(data)
+                != (
+                    {"operation", "path", "data"}
+                    if data["operation"] == "write"
+                    else {"operation", "path"}
+                )
+            ):
+                raise ValueError("sandbox_file_request")
+            result = exchange(data["operation"], data["path"], data.get("data"))
+        except (OSError, ValueError, TypeError):
+            result = {"error": "sandbox_file_rejected"}
+        print(json.dumps(result))
     else:
         data = json.loads(sys.stdin.buffer.read(16385))
         if (

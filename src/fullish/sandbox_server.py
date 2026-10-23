@@ -4,6 +4,7 @@ Install as a separate Unix user. Neither the bot nor model receives the Docker s
 All Docker options are fixed here; input can only select an explicitly enabled group.
 """
 
+import base64
 import hashlib
 import hmac
 import http.server
@@ -21,10 +22,12 @@ from typing import Any
 
 if __package__:
     from fullish.group_policy import GroupPolicies
+    from fullish.sandbox_files import MAX_FILE_BYTES, MAX_FILE_JSON, relative_path
 else:
     # The standalone service uses -I; load only its root-owned sibling module.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from group_policy import GroupPolicies  # pyright: ignore[reportMissingImports]
+    from sandbox_files import MAX_FILE_BYTES, MAX_FILE_JSON, relative_path  # pyright: ignore[reportMissingImports]
 
 WORKER = "/opt/fullish/worker.py"
 WORKSPACE_OPTIONS = "rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=700"
@@ -84,7 +87,14 @@ class Sandboxes:
                 # disabled workspaces before allocating another of the two slots.
                 self.docker(["rm", "--force", name])
 
-    def docker(self, arguments: list[str], *, data: str | None = None, timeout: int = 10) -> str:
+    def docker(
+        self,
+        arguments: list[str],
+        *,
+        data: str | None = None,
+        timeout: int = 10,
+        output_limit: int = 65536,
+    ) -> str:
         # Never inherit credentials, DOCKER_CONTEXT or arbitrary CLI plugin configuration.
         environment = {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -129,7 +139,7 @@ class Sandboxes:
                                 selector.unregister(key.fd)
                             else:
                                 total += len(chunk)
-                                if total > 65536:
+                                if total > output_limit:
                                     raise SandboxError("sandbox_output_too_large")
                                 if key.data == "stdout":
                                     output.extend(chunk)
@@ -287,31 +297,103 @@ class Sandboxes:
             or not 1 <= data["timeout_seconds"] <= 30
         ):
             raise SandboxError("invalid_or_unauthorized_request")
+        return self.run_worker(
+            data["group_id"],
+            {"command": data["command"], "timeout_seconds": data["timeout_seconds"]},
+            timeout=data["timeout_seconds"] + 5,
+        )
+
+    def transfer(self, operation: str, data: dict) -> dict:
+        keys = {"group_id", "sender_id", "message_id", "path"}
+        if operation == "write":
+            keys.add("data")
+        if (
+            operation not in {"read", "write"}
+            or not isinstance(data, dict)
+            or set(data) != keys
+            or data.get("group_id") not in self.groups
+            or not all(
+                isinstance(data.get(key), str) and 1 <= len(data[key]) <= 256
+                for key in ("sender_id", "message_id")
+            )
+        ):
+            raise SandboxError("invalid_or_unauthorized_request")
+        try:
+            path = relative_path(data["path"])
+            payload = {"operation": operation, "path": path}
+            if operation == "write":
+                encoded = data["data"]
+                if not isinstance(encoded, str) or len(encoded) > MAX_FILE_JSON - 4096:
+                    raise ValueError
+                body = base64.b64decode(encoded, validate=True)
+                if not 0 < len(body) <= MAX_FILE_BYTES:
+                    raise ValueError
+                payload["data"] = encoded
+        except (ValueError, TypeError):
+            raise SandboxError("invalid_sandbox_file_request") from None
+        return self.run_worker(data["group_id"], payload, timeout=20, file_operation=True)
+
+    def run_worker(
+        self,
+        group: str,
+        payload: dict,
+        *,
+        timeout: int,
+        file_operation: bool = False,
+    ) -> dict:
         if not self.lock.acquire(blocking=False):
             raise SandboxError("sandbox_busy")
         name = ""
         broken = True
         try:
-            if data["group_id"] not in self.groups:
+            if group not in self.groups:
                 raise SandboxError("invalid_or_unauthorized_request")
             self.check_runtime()
             self.reconcile()
-            name = self.ensure(data["group_id"])
+            name = self.ensure(group)
             # Clear leftovers after broker restart as well as after every command.
             self.docker(["exec", name, "python3", "-I", WORKER, "--cleanup"])
+            options = {"output_limit": MAX_FILE_JSON} if file_operation else {}
             raw = self.docker(
-                ["exec", "-i", name, "python3", "-I", WORKER],
-                data=json.dumps(
-                    {
-                        "command": data["command"],
-                        "timeout_seconds": data["timeout_seconds"],
-                    }
-                ),
-                timeout=data["timeout_seconds"] + 5,
+                [
+                    "exec",
+                    "-i",
+                    name,
+                    "python3",
+                    "-I",
+                    WORKER,
+                    *(["--file"] if file_operation else []),
+                ],
+                data=json.dumps(payload),
+                timeout=timeout,
+                **options,
             )
-            if len(raw) > 65536:
+            if len(raw) > (MAX_FILE_JSON if file_operation else 65536):
                 raise SandboxError("sandbox_output_too_large")
             result = json.loads(raw)
+            if file_operation:
+                if result == {"error": "sandbox_file_rejected"}:
+                    broken = False
+                    return result
+                expected = (
+                    {"path", "size", "data"} if payload["operation"] == "read" else {"path", "size"}
+                )
+                if (
+                    not isinstance(result, dict)
+                    or set(result) != expected
+                    or result["path"] != payload["path"]
+                    or type(result["size"]) is not int
+                    or not 0 <= result["size"] <= MAX_FILE_BYTES
+                ):
+                    raise SandboxError("invalid_sandbox_file_result")
+                if payload["operation"] == "read":
+                    if (
+                        not isinstance(result["data"], str)
+                        or len(base64.b64decode(result["data"], validate=True)) != result["size"]
+                    ):
+                        raise SandboxError("invalid_sandbox_file_result")
+                broken = False
+                return result
             if (
                 not isinstance(result, dict)
                 or set(result) != {"output", "exit_code", "timed_out", "truncated"}
@@ -365,15 +447,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            file_route = self.path in {"/files/read", "/files/write"}
             if (
-                self.path != "/exec"
-                or not 1 <= length <= 16384
+                (self.path != "/exec" and not file_route)
+                or not 1 <= length <= (MAX_FILE_JSON if self.path == "/files/write" else 16384)
                 or self.headers.get("Transfer-Encoding")
             ):
                 raise SandboxError("invalid_request")
             self.connection.settimeout(5)
             data = json.loads(self.rfile.read(length))
-            result = self.server.sandboxes.execute(data)
+            result = (
+                self.server.sandboxes.transfer(self.path.rsplit("/", 1)[1], data)
+                if file_route
+                else self.server.sandboxes.execute(data)
+            )
             self.respond(200, result)
         except SandboxError as error:
             self.respond(429 if str(error) == "sandbox_busy" else 503, {"error": str(error)})

@@ -150,7 +150,11 @@ def test_tool_permissions_are_rechecked_after_menu_revocation(control):
             web_transport=httpx.MockTransport(backend),
         )
         try:
-            assert len(tools.schemas(context)) == 2
+            assert {schema["function"]["name"] for schema in tools.schemas(context)} == {
+                "web_search",
+                "web_fetch",
+                "web_image",
+            }
             control.policies.change(GROUP, "search", False)
             result = json.loads(await tools.invoke("web_search", '{"query":"test"}', context))
             assert not result["ok"]

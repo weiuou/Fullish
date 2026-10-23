@@ -140,6 +140,4 @@ class ToolSettings:
             raise ValueError(
                 "SANDBOX_SOCKET requires an absolute Unix socket path and SANDBOX_TOKEN (32+ chars)"
             )
-        if not key and not socket:
-            return None
         return cls(groups, key, socket, token)

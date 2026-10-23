@@ -1,5 +1,6 @@
 """Fail-closed broker policy, reuse, authentication and cleanup decisions."""
 
+import base64
 import json
 import os
 import threading
@@ -220,6 +221,24 @@ def test_unix_socket_requires_auth_and_rejects_oversize_body(broker, tmp_path):
                     "output": "ok"
                 }
                 broker.execute.assert_called_once_with(request())
+                broker.transfer = Mock(return_value={"path": "ref.png", "size": 4})
+                payload = {
+                    key: value
+                    for key, value in request().items()
+                    if key not in {"command", "timeout_seconds"}
+                }
+                payload["path"] = "ref.png"
+                assert client.post("/files/read", json=payload).status_code == 401
+                assert (
+                    client.post("/files/read", content=b"x" * 17000, headers=headers).status_code
+                    == 503
+                )
+                broker.transfer.assert_not_called()
+                assert client.post("/files/read", json=payload, headers=headers).json() == {
+                    "path": "ref.png",
+                    "size": 4,
+                }
+                broker.transfer.assert_called_once_with("read", payload)
         finally:
             server.shutdown()
             thread.join(timeout=2)
@@ -234,3 +253,37 @@ def test_worker_cleanup_refuses_the_host_pid_namespace(monkeypatch):
     with pytest.raises(RuntimeError, match="sandbox_pid_namespace_required"):
         sandbox_worker.cleanup()
     kill.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"group_id": "other"},
+        {"path": "../secret"},
+        {"path": "/etc/passwd"},
+        {"path": "x", "image": "evil"},
+        {"sender_id": ""},
+    ],
+)
+def test_file_exchange_rejects_authority_and_path_changes_before_docker(broker, change):
+    broker.docker = Mock()
+    data = {"group_id": GROUP, "sender_id": "member", "message_id": "message", "path": "ref.png"}
+    with pytest.raises(SandboxError):
+        broker.transfer("read", {**data, **change})
+    broker.docker.assert_not_called()
+
+
+def test_file_exchange_uses_stdin_and_bounded_output_with_existing_cleanup(broker):
+    broker.check_runtime = Mock()
+    broker.ensure = Mock(return_value="sandbox-test")
+    encoded = base64.b64encode(b"synthetic-image-bytes").decode()
+    broker.docker = Mock(return_value=json.dumps({"path": "ref.png", "size": 21, "data": encoded}))
+    data = {"group_id": GROUP, "sender_id": "member", "message_id": "message", "path": "ref.png"}
+    result = broker.transfer("read", data)
+    assert result["data"] == encoded
+    calls = broker.docker.call_args_list
+    assert len(calls) == 3
+    assert calls[1].args[0][-1] == "--file"
+    assert json.loads(calls[1].kwargs["data"]) == {"operation": "read", "path": "ref.png"}
+    assert calls[1].kwargs["output_limit"] > 10 * 1024 * 1024
+    assert not broker.lock.locked()

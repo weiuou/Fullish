@@ -5,6 +5,7 @@ worker in a temporary Docker container (CI); this does not attest gVisor isolati
 """
 
 import argparse
+import base64
 import http.client
 import json
 import shlex
@@ -55,11 +56,23 @@ def main() -> None:
                 return
             settings["TOOLS_ALLOWED_GROUPS"] = ",".join(sorted(enabled))
 
-    def invoke(command: str, timeout: int = 5) -> dict:
+    def call(route: str, payload: dict, timeout: int = 5) -> dict:
         if args.worker_image:
+            file_operation = route != "/exec"
+            if file_operation:
+                payload = {"operation": route.rsplit("/", 1)[1], **payload}
             result = subprocess.run(
-                ["docker", "exec", "-i", name, "python3", "-I", "/opt/fullish/worker.py"],
-                input=json.dumps({"command": command, "timeout_seconds": timeout}),
+                [
+                    "docker",
+                    "exec",
+                    "-i",
+                    name,
+                    "python3",
+                    "-I",
+                    "/opt/fullish/worker.py",
+                    *(["--file"] if file_operation else []),
+                ],
+                input=json.dumps(payload),
                 text=True,
                 capture_output=True,
                 timeout=timeout + 10,
@@ -70,14 +83,13 @@ def main() -> None:
         try:
             client.request(
                 "POST",
-                "/exec",
+                route,
                 body=json.dumps(
                     {
                         "group_id": settings["TOOLS_ALLOWED_GROUPS"].split(",")[0],
                         "sender_id": "synthetic-smoke",
                         "message_id": prefix,
-                        "command": command,
-                        "timeout_seconds": timeout,
+                        **payload,
                     }
                 ),
                 headers={
@@ -88,9 +100,12 @@ def main() -> None:
             response = client.getresponse()
             if response.status != 200:
                 raise RuntimeError("broker_request_failed")
-            return json.loads(response.read(65537))
+            return json.loads(response.read(2 * 1024 * 1024 + 1))
         finally:
             client.close()
+
+    def invoke(command: str, timeout: int = 5) -> dict:
+        return call("/exec", {"command": command, "timeout_seconds": timeout}, timeout)
 
     def python(source: str) -> str:
         return "python3 -c " + shlex.quote(source)
@@ -166,6 +181,18 @@ def main() -> None:
         check("background children cleaned", data["output"].strip() == "False")
         data = invoke(python("print('x'*30000)"))
         check("bounded output", data["truncated"] and len(data["output"]) <= 12000)
+        file_path = prefix + "_image.png"
+        picture = b"\x89PNG\r\n\x1a\n" + b"synthetic-image" * 16384
+        encoded = base64.b64encode(picture).decode("ascii")
+        data = call("/files/write", {"path": file_path, "data": encoded})
+        check("binary import", data == {"path": file_path, "size": len(picture)})
+        data = call("/files/read", {"path": file_path})
+        check("binary export over text output limit", data.get("data") == encoded)
+        link = prefix + "_link"
+        invoke(python(f"import os; os.symlink('/etc/passwd', '/workspace/{link}')"))
+        data = call("/files/read", {"path": link})
+        check("file export rejects symlinks", data == {"error": "sandbox_file_rejected"})
+        invoke("rm -f -- /workspace/" + file_path + " /workspace/" + link)
         invoke("rm -f /workspace/" + prefix)
     finally:
         if args.worker_image:

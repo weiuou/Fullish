@@ -59,7 +59,15 @@ def test_current_platform_identity_survives_tool_loop_and_provider_metadata() ->
         data = json.loads(request.content)
         posted.append(data)
         if len(posted) == 1:
-            assert len(data["tools"]) == 3
+            assert {tool["function"]["name"] for tool in data["tools"]} == {
+                "web_search",
+                "web_fetch",
+                "web_image",
+                "sandbox_exec",
+                "sandbox_upload",
+                "sandbox_download",
+                "send_image",
+            }
             return response({"content": None, "tool_calls": [call()]})
         assistant = data["messages"][-2]
         assert assistant["tool_calls"][0]["extra_content"] == call()["extra_content"]
@@ -330,6 +338,9 @@ def test_tool_settings_fail_closed_and_secrets_are_redacted(monkeypatch):
     for name in ("TOOLS_ALLOWED_GROUPS", "DEEPSEEK_API_KEY", "SANDBOX_SOCKET", "SANDBOX_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     assert ToolSettings.from_env() is None
+    monkeypatch.setenv("TOOLS_ALLOWED_GROUPS", GROUP)
+    assert ToolSettings.from_env() == ToolSettings(frozenset({GROUP}))
+    monkeypatch.delenv("TOOLS_ALLOWED_GROUPS")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "private-key")
     with pytest.raises(ValueError, match="explicit"):
         ToolSettings.from_env()

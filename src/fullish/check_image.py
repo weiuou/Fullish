@@ -12,7 +12,9 @@ from fullish.media import sniff_image_type
 from fullish.settings import ImageGenerationSettings, ModelSettings
 
 
-async def check(*, generate: bool = False, output: Path | None = None) -> None:
+async def check(
+    *, generate: bool = False, output: Path | None = None, reference: Path | None = None
+) -> None:
     connection = ModelSettings.from_env()
     settings = ImageGenerationSettings.from_env()
     if connection is None:
@@ -24,8 +26,17 @@ async def check(*, generate: bool = False, output: Path | None = None) -> None:
         model = await generator.select_model()
         result: dict[str, object] = {"model": model}
         if generate:
-            image = await generator.generate("生成一张白底蓝色圆形的简洁图标，只需一张图。")
+            if reference:
+                with reference.open("rb") as source:
+                    body = source.read(10 * 1024 * 1024 + 1)
+                image = await generator.generate(
+                    "保留参考图主体的外观，制作一张开心的表情包，只需一张图。",
+                    reference_images=(body,),
+                )
+            else:
+                image = await generator.generate("生成一张白底蓝色圆形的简洁图标，只需一张图。")
             result.update(
+                mode="edit" if reference else "generate",
                 bytes=len(image.image),
                 media_type=sniff_image_type(image.image),
                 sha256=hashlib.sha256(image.image).hexdigest(),
@@ -45,10 +56,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--generate", action="store_true", help="Generate one tiny test image")
     parser.add_argument("--output", type=Path, help="Optionally save the test image bytes")
+    parser.add_argument(
+        "--reference", type=Path, help="Test images/edits with this local reference"
+    )
     args = parser.parse_args()
-    if args.output and not args.generate:
-        parser.error("--output requires --generate")
-    asyncio.run(check(generate=args.generate, output=args.output))
+    if (args.output or args.reference) and not args.generate:
+        parser.error("--output and --reference require --generate")
+    asyncio.run(check(generate=args.generate, output=args.output, reference=args.reference))
 
 
 if __name__ == "__main__":

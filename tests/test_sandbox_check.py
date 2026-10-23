@@ -10,7 +10,9 @@ from fullish import sandbox_check
 from fullish.settings import ToolSettings
 
 
-@pytest.mark.parametrize("failure", ["disabled", "denied", "timeout", "wrong_output", "success"])
+@pytest.mark.parametrize(
+    "failure", ["disabled", "denied", "timeout", "wrong_output", "file_mismatch", "success"]
+)
 def test_deployment_gate_requires_a_real_success(monkeypatch, failure):
     settings = ToolSettings(frozenset({"synthetic-group"}), sandbox_socket="/missing/socket")
     monkeypatch.setattr(
@@ -30,6 +32,18 @@ def test_deployment_gate_requires_a_real_success(monkeypatch, failure):
         invoke=AsyncMock(return_value=json.dumps({"ok": failure != "denied", "data": data})),
         close=AsyncMock(),
     )
+
+    async def file_request(route, context, **payload):
+        result = {"path": payload["path"], "size": len(b"\x89PNG\r\n\x1a\nfullish-file-check")}
+        if route == "/files/read":
+            import base64
+
+            result["data"] = base64.b64encode(b"\x89PNG\r\n\x1a\nfullish-file-check").decode()
+            if failure == "file_mismatch":
+                result["data"] = "not-the-original-file"
+        return result
+
+    tools.file_request = AsyncMock(side_effect=file_request)
     factory = Mock(return_value=tools)
     monkeypatch.setattr(sandbox_check, "ToolRuntime", factory)
     if failure in {"disabled", "success"}:

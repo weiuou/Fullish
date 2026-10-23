@@ -470,7 +470,14 @@ def test_image_generation_coexists_with_scoped_runtime_tools(mixed_batch):
             payload = json.loads(request.content)
             posted.append(payload)
             names = {schema["function"]["name"] for schema in payload["tools"]}
-            assert names == {"sandbox_exec", "generate_image"}
+            assert names == {
+                "sandbox_exec",
+                "sandbox_upload",
+                "sandbox_download",
+                "web_image",
+                "generate_image",
+                "send_image",
+            }
             if len(posted) == 1:
                 calls = [sandbox_call]
                 if mixed_batch:
