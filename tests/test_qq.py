@@ -71,9 +71,12 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
         assert result['image_model'] == 'gpt-image-2.5'
         assert result['fallback_model'] == 'gpt-6-luna'
         assert result['developer_menu_enabled'] is True
+        assert result['reply_postprocessing_enabled'] is True
+        assert result['reply_postprocessing_model'] == 'expression-test-model'
         assert client.get('/version').json()['mode'] == 'qq'
     assert app.state.model.client.is_closed
     assert app.state.model.image_generator.client.is_closed
+    assert app.state.reply_postprocessor.client.is_closed
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -82,6 +85,8 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
             "AI_BASE_URL": "http://localhost/v1",
             "AI_API_KEY": "fake-key",
             "AI_MODEL": "gemini-3.8-flash-high",
+            "AI_REPLY_POSTPROCESSING": "true",
+            "AI_REPLY_MODEL": "expression-test-model",
             "QQ_ENABLED": "true",
             "QQ_APP_ID": "1234",
             "QQ_APP_SECRET": "fake-secret",

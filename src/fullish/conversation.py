@@ -9,8 +9,9 @@ from typing import Protocol, TypedDict
 from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
 from fullish.control import GroupControl
 from fullish.model import Turn as ModelTurn
-from fullish.sending import Reply
-from fullish.sending.schema import outgoing
+from fullish.sending import Reply, ReplyPlan
+from fullish.sending.postprocess import ReplyPostprocessor
+from fullish.sending.schema import outgoing, reply_messages
 from fullish.telemetry import emit, message_trace, reference, trace_id
 from fullish.tools import ToolContext
 
@@ -70,9 +71,11 @@ class Conversations:
         allowed_groups: frozenset[str] = frozenset(),
         min_interval: float = 5,
         control: GroupControl | None = None,
+        postprocessor: ReplyPostprocessor | None = None,
     ):
         self.model = model
         self.control = control
+        self.postprocessor = postprocessor
         self.allowed_groups = allowed_groups
         self.groups: OrderedDict[str, Group] = OrderedDict()
         self.active = 0
@@ -88,7 +91,7 @@ class Conversations:
         *,
         addressed: bool,
         images: list[str] | None = None,
-    ) -> Reply | None:
+    ) -> Reply | ReplyPlan | None:
         """Convenience entry for text-based replay and callers without an adapter."""
         parts = (MessagePart("text", text),) + tuple(
             MessagePart("image", "", {"url": url}, status="pending") for url in images or ()
@@ -97,11 +100,11 @@ class Conversations:
             CollectedMessage(group_id, message_id, Sender(sender), ParsedContent(parts), addressed)
         )
 
-    async def receive_message(self, message: CollectedMessage) -> Reply | None:
+    async def receive_message(self, message: CollectedMessage) -> Reply | ReplyPlan | None:
         with message_trace(message.group_id, message.message_id):
             return await self._receive(message)
 
-    async def _receive(self, message: CollectedMessage) -> Reply | None:
+    async def _receive(self, message: CollectedMessage) -> Reply | ReplyPlan | None:
         group_id, message_id = message.group_id, message.message_id
         text, images = message.content.text, message.content.image_urls
         addressed = message.addressed
@@ -234,11 +237,21 @@ class Conversations:
                     image_count=len(selected),
                     omitted_images=image_count - len(selected),
                 )
-                return await self.model.reply(
+                draft = await self.model.reply(
                     history[::-1],
                     addressed=called,
                     context=ToolContext(group_id, message.sender.id, message_id),
                 )
+                if draft and self.postprocessor and self.reply_allowed(group_id, draft):
+                    return await self.postprocessor.process(
+                        draft,
+                        context=history[::-1],
+                        allow_images=(
+                            not self.control
+                            or self.control.policies.features(group_id).allows("image")
+                        ),
+                    )
+                return draft
             finally:
                 self.active -= 1
                 self.capacity.release()
@@ -248,12 +261,14 @@ class Conversations:
             return self.control.policies.features(group_id).chat
         return not self.allowed_groups or group_id in self.allowed_groups
 
-    def reply_allowed(self, group_id: str, reply: Reply) -> bool:
+    def reply_allowed(self, group_id: str, reply: Reply | ReplyPlan) -> bool:
         if not self.group_allowed(group_id):
             return False
         return (
             not self.control
-            or not any(part.kind == "image" for part in outgoing(reply).parts)
+            or not any(
+                part.kind == "image" for message in reply_messages(reply) for part in message.parts
+            )
             or self.control.policies.features(group_id).allows("image")
         )
 

@@ -14,11 +14,14 @@ from fullish.conversation import Conversations
 from fullish.developer_menu import DeveloperMenu
 from fullish.generation.openai import OpenAIImageGenerator
 from fullish.model import ChatModel
+from fullish.sending.assets import ReplyAssets
+from fullish.sending.postprocess import ReplyPostprocessor
 from fullish.settings import (
     DeploymentReportSettings,
     ImageGenerationSettings,
     ModelSettings,
     QQSettings,
+    ReplyPostprocessSettings,
     ToolSettings,
 )
 from fullish.telemetry import emit
@@ -31,6 +34,9 @@ def create_app() -> FastAPI:
     qq_settings = QQSettings.from_env()
     report_settings = DeploymentReportSettings.from_env()
     tool_settings = ToolSettings.from_env()
+    reply_settings = ReplyPostprocessSettings.from_env()
+    if reply_settings and not model_settings:
+        raise ValueError("Reply postprocessing requires the AI backend")
     if tool_settings and not model_settings:
         raise ValueError("Tools require the AI backend")
     if report_settings and (not qq_settings or not model_settings):
@@ -84,6 +90,18 @@ def create_app() -> FastAPI:
         else None
     )
     app.state.model = model
+    postprocessor = (
+        ReplyPostprocessor(
+            model_settings,
+            reply_settings,
+            assets=ReplyAssets.from_file(reply_settings.assets_file)
+            if reply_settings.assets_file
+            else ReplyAssets(),
+        )
+        if model_settings and reply_settings
+        else None
+    )
+    app.state.reply_postprocessor = postprocessor
     app.state.group_control = control
     queue = None
     if qq_settings and model:
@@ -91,7 +109,12 @@ def create_app() -> FastAPI:
 
         driver.register_adapter(GroupOnlyAdapter)
         queue = install_group_handler(
-            Conversations(model, allowed_groups=qq_settings.allowed_groups, control=control),
+            Conversations(
+                model,
+                allowed_groups=qq_settings.allowed_groups,
+                control=control,
+                postprocessor=postprocessor,
+            ),
             developer=DeveloperMenu(control) if control else None,
         )
         if report_settings:
@@ -127,6 +150,8 @@ def create_app() -> FastAPI:
             await queue.close()
         if model:
             await model.close()
+        if postprocessor:
+            await postprocessor.close()
 
     @app.get("/health/live", include_in_schema=False)
     async def live() -> dict[str, str | bool]:
@@ -169,6 +194,8 @@ def create_app() -> FastAPI:
             "search_configured": bool(tool_settings and tool_settings.deepseek_key),
             "sandbox_configured": bool(tool_settings and tool_settings.sandbox_socket),
             "developer_menu_enabled": control is not None,
+            "reply_postprocessing_enabled": postprocessor is not None,
+            "reply_postprocessing_model": postprocessor.model if postprocessor else "",
         }
 
     return app

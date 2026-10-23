@@ -1,5 +1,6 @@
 """Transport-independent reply candidates. Media is supplied by a caller/provider."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -48,7 +49,22 @@ class Audio:
         validate_source(self.source)
 
 
-type MessagePart = Text | Image | Audio
+@dataclass(frozen=True)
+class QQFace:
+    id: str
+    fallback: str
+    kind: ClassVar[str] = "qq_face"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or re.fullmatch(r"[0-9]{1,6}", self.id) is None:
+            raise ValueError("QQ face ID must contain 1 to 6 ASCII digits")
+        if not isinstance(self.fallback, str) or not self.fallback.strip():
+            raise ValueError("QQ face fallback must be nonempty text")
+        if len(self.fallback) > 100:
+            raise ValueError("QQ face fallback must not exceed 100 characters")
+
+
+type MessagePart = Text | Image | Audio | QQFace
 
 
 @dataclass(frozen=True)
@@ -58,7 +74,7 @@ class OutgoingMessage:
     def __post_init__(self) -> None:
         if not isinstance(self.parts, tuple):
             raise TypeError("Message parts must be a tuple")
-        if any(not isinstance(part, (Text, Image, Audio)) for part in self.parts):
+        if any(not isinstance(part, (Text, Image, Audio, QQFace)) for part in self.parts):
             raise TypeError("Unsupported outgoing message part")
         # QQ's group sender picks only one attachment. Reject rather than lose media.
         if sum(isinstance(part, (Image, Audio)) for part in self.parts) > 1:
@@ -76,6 +92,8 @@ class OutgoingMessage:
         return "".join(
             part.text
             if isinstance(part, Text)
+            else part.fallback
+            if isinstance(part, QQFace)
             else "[图片]"
             if isinstance(part, Image)
             else "[语音]"
@@ -86,5 +104,24 @@ class OutgoingMessage:
 type Reply = str | OutgoingMessage
 
 
+@dataclass(frozen=True)
+class ReplyPlan:
+    """An expression decision, bounded by QQ's passive reply message budget."""
+
+    messages: tuple[OutgoingMessage, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.messages, tuple):
+            raise TypeError("Reply plan messages must be a tuple")
+        if not 1 <= len(self.messages) <= 5:
+            raise ValueError("Reply plan must contain 1 to 5 messages")
+        if any(not isinstance(message, OutgoingMessage) for message in self.messages):
+            raise TypeError("Reply plan must contain outgoing messages")
+
+
 def outgoing(reply: Reply) -> OutgoingMessage:
     return OutgoingMessage((Text(reply),)) if isinstance(reply, str) else reply
+
+
+def reply_messages(reply: Reply | ReplyPlan) -> tuple[OutgoingMessage, ...]:
+    return reply.messages if isinstance(reply, ReplyPlan) else (outgoing(reply),)

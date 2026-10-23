@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from math import isfinite
+from pathlib import Path
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -68,6 +69,44 @@ class ImageGenerationSettings:
         except ValueError:
             raise ValueError("AI_IMAGE_TIMEOUT_SECONDS must be a number") from None
         return cls(model, timeout)
+
+
+@dataclass(frozen=True)
+class ReplyPostprocessSettings:
+    model: str = ""
+    timeout: float = 12
+    max_messages: int = 3
+    style: str = "你是 Fullish，QQ 群里的 AI 伙伴。自然、简短、友好，有自己的判断。"
+    assets_file: Path | None = None
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.timeout) or not 0 < self.timeout <= 30:
+            raise ValueError("AI_REPLY_TIMEOUT_SECONDS must be greater than 0 and at most 30")
+        if type(self.max_messages) is not int or not 1 <= self.max_messages <= 5:
+            raise ValueError("AI_REPLY_MAX_MESSAGES must be between 1 and 5")
+        if not self.style.strip() or len(self.style) > 2000:
+            raise ValueError("AI_REPLY_STYLE must contain 1 to 2000 characters")
+
+    @classmethod
+    def from_env(cls) -> Self | None:
+        enabled = os.environ.get("AI_REPLY_POSTPROCESSING", "false").strip().lower()
+        if enabled not in {"true", "false"}:
+            raise ValueError("AI_REPLY_POSTPROCESSING must be true or false")
+        if enabled == "false":
+            return None
+        try:
+            timeout = float(os.environ.get("AI_REPLY_TIMEOUT_SECONDS", "12"))
+            maximum = int(os.environ.get("AI_REPLY_MAX_MESSAGES", "3"))
+        except ValueError:
+            raise ValueError("Reply timeout and message limit must be numbers") from None
+        assets = os.environ.get("AI_REPLY_ASSETS_FILE", "").strip()
+        return cls(
+            model=os.environ.get("AI_REPLY_MODEL", "").strip(),
+            timeout=timeout,
+            max_messages=maximum,
+            style=os.environ.get("AI_REPLY_STYLE", cls.style),
+            assets_file=Path(assets) if assets else None,
+        )
 
 
 @dataclass(frozen=True)
