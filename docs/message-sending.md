@@ -50,7 +50,7 @@ AI_IMAGE_TIMEOUT_SECONDS=120
 
 生图与现有搜索、沙箱工具共用聊天工具调用流程，支持先查询或计算，再生成配图；搜索与沙箱继续使用平台提供的当前群、成员及消息标识检查权限。每轮总计至多十二次工具调用，生图作为结束本轮回复的独立调用；同一批同时包含生图与其他工具时整批拒绝，不执行其中任何操作。
 
-`generate_image` 额外支持 `reference_image_ids`：最多四个本轮已查看图片的 ID，来源可以是群附件、引用、`web_image` 或 `sandbox_download`。有参考图时，适配器改用 `/v1/images/edits`，以 multipart 的 `image[]` 字段上传实际图片字节，携带原有 `model`、`prompt`、`n=1`；继续复用 CPA 地址、密钥、Unix socket 和总超时。没有参考图时仍使用原有文生图接口。参考图支持 PNG / JPEG / WebP / GIF；GIF 在工作线程中将首帧转换为保留透明度的 PNG 后上传，原始资产仍可按 GIF 查看、发送。GIF 解码限 1600 万像素，转换前后单张最多 10 MiB、合计 20 MiB。接口依据：[OpenAI 图片参考与编辑](https://developers.openai.com/api/docs/guides/image-generation#edit-images)。
+`generate_image` 额外支持 `reference_image_ids`：最多四个本轮已查看图片的 ID，来源可以是群附件、引用、`web_image` 或 `sandbox_download`。有参考图时，适配器改用 `/v1/images/edits`，以 multipart 的 `image[]` 字段上传实际图片字节，携带原有 `model`、`prompt`、`n=1`；继续复用 CPA 地址、密钥、Unix socket 和总超时。没有参考图时仍使用原有文生图接口。参考图支持 PNG / JPEG / WebP / GIF。GIF 在工作线程中按完整时间轴抽取最多 12 帧，始终包含首尾；不足 12 帧时全部保留，长时间停留的同一帧不占用多个采样位置。动态帧正确合成后，按从左到右、从上到下排列并标注原帧号和时间，聊天视觉输入和编辑上传使用同一张 PNG 动作序列图；生成提示词结合整个过程描述所需单张表情，避免照抄多格排版。静态 GIF 直接转为保留透明度的 PNG，原始 GIF 资产仍可发送或导入沙箱。解码限制为单帧 1600 万像素、512 帧、单遍累计 6400 万像素，序列图最多 3 MiB；转换前后单张最多 10 MiB、合计 20 MiB，预览也计入本轮图片内存配额。接口依据：[OpenAI 图片参考与编辑](https://developers.openai.com/api/docs/guides/image-generation#edit-images)。
 
 搜索命中、图片链接或文字描述不能代替真实参考图；提示词要求先看图再填 ID。未知、过期或其他轮次的 ID 会被拒绝。编辑接口失败不会自动重试，也不会退回文生图后声称保留了原形象。CPA 模型目录中存在图片模型并不能证明该渠道支持编辑，需要在实际部署渠道显式验收。
 
