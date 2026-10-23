@@ -50,6 +50,12 @@ AI_IMAGE_TIMEOUT_SECONDS=120
 
 生图与现有搜索、沙箱工具共用聊天工具调用流程，支持先查询或计算，再生成配图；搜索与沙箱继续使用平台提供的当前群、成员及消息标识检查权限。每轮总计至多十二次工具调用，生图作为结束本轮回复的独立调用；同一批同时包含生图与其他工具时整批拒绝，不执行其中任何操作。
 
+`generate_image` 额外支持 `reference_image_ids`：最多四个本轮已查看图片的 ID，来源可以是群附件、引用、`web_image` 或 `sandbox_download`。有参考图时，适配器改用 `/v1/images/edits`，以 multipart 的 `image[]` 字段上传实际图片字节，携带原有 `model`、`prompt`、`n=1`；继续复用 CPA 地址、密钥、Unix socket 和总超时。没有参考图时仍使用原有文生图接口。参考图支持 PNG / JPEG / WebP，单张最多 10 MiB、合计 20 MiB；GIF 可查看、发送，但编辑需先转换为上述格式。接口依据：[OpenAI 图片参考与编辑](https://developers.openai.com/api/docs/guides/image-generation#edit-images)。
+
+搜索命中、图片链接或文字描述不能代替真实参考图；提示词要求先看图再填 ID。未知、过期或其他轮次的 ID 会被拒绝。编辑接口失败不会自动重试，也不会退回文生图后声称保留了原形象。CPA 模型目录中存在图片模型并不能证明该渠道支持编辑，需要在实际部署渠道显式验收。
+
+`send_image(image_id, caption)` 可直接发送本轮已有图片，包括沙箱处理的结果，继续经过相同的 QQ 统一发送出口和群图片权限检查；无需启用图片生成服务。此工具同样独立结束本轮，不允许与其他工具混批。获取参考图与沙箱传输见 [基础工具](tools.md)。
+
 已获准群内的 @ / 提到 Fullish 请求，在文字生成或生图异常时发送简短文字提示；生图限流明确说明图片未生成，不发送原先拟好的成功配文。主备文字模型都失败也会说明未完成。日志使用 `qq.reply.fallback` 和 `qq.message.completed` 的 `fallback_sent` 区分失败提示与正常回答。取消继续向上传递；QQ 拒绝发送时不伪记发送成功。普通上下文消息、未获准群和模型主动保持沉默不会因此收到额外提示。
 
 在配置已加载的运行容器内查看配置的图片模型（不生图，也不验证模型可用性）：
@@ -63,6 +69,8 @@ sudo docker exec fullish-bot-1 python -m fullish.check_image
 ```sh
 sudo docker exec fullish-bot-1 python -m fullish.check_image --generate
 # 可加 --output /tmp/fullish-image.png 保存结果供人工查看。
+# 用容器内已有参考图验证 CPA 图片编辑（会消耗一次图片额度，不向 QQ 发消息）。
+sudo docker exec fullish-bot-1 python -m fullish.check_image --generate --reference /tmp/reference.png --output /tmp/edited.png
 ```
 
 最后在测试群请求一张图片，检查配文与图片同条到达。`/health/dependencies` 中的 `image_generation_enabled` 仅表示工具已配置，`image_model` 表示配置的图片模型，旧值 `auto` 等价于 `gpt-image-2.5`；健康检查不会调用生图接口。实际渠道模型是否可生成，仍需上述显式生图验收。

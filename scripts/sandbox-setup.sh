@@ -31,7 +31,7 @@ install -d -m 755 /opt/fullish-sandbox
 backup=$(mktemp -d /opt/fullish-sandbox/setup-backup.XXXXXXXX)
 was_active=false
 systemctl is-active --quiet fullish-sandbox.service && was_active=true
-for path in /opt/fullish-sandbox/server.py /opt/fullish-sandbox/group_policy.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
+for path in /opt/fullish-sandbox/server.py /opt/fullish-sandbox/group_policy.py /opt/fullish-sandbox/sandbox_files.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
     [[ ! -f $path ]] || cp -p -- "$path" "$backup/${path##*/}"
 done
 accepted=false
@@ -40,7 +40,7 @@ finish() {
     trap - EXIT
     if [[ $accepted != true ]]; then
         systemctl stop fullish-sandbox.service || true
-        for path in /opt/fullish-sandbox/server.py /opt/fullish-sandbox/group_policy.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
+        for path in /opt/fullish-sandbox/server.py /opt/fullish-sandbox/group_policy.py /opt/fullish-sandbox/sandbox_files.py /etc/systemd/system/fullish-sandbox.service /etc/fullish-sandbox.env; do
             if [[ -f $backup/${path##*/} ]]; then cp -p -- "$backup/${path##*/}" "$path"; fi
         done
         systemctl daemon-reload
@@ -52,6 +52,7 @@ finish() {
 trap finish EXIT
 install -m 644 "$source_root/src/fullish/sandbox_server.py" /opt/fullish-sandbox/server.py
 install -m 644 "$source_root/src/fullish/group_policy.py" /opt/fullish-sandbox/group_policy.py
+install -m 644 "$source_root/src/fullish/sandbox_files.py" /opt/fullish-sandbox/sandbox_files.py
 install -m 644 "$source_root/deploy/fullish-sandbox.service" /etc/systemd/system/fullish-sandbox.service
 python3 - "$sandbox_group" "$sandbox_image" "$sandbox_host" "$sandbox_home" "$sandbox_uid" <<'PY'
 import os, pathlib, secrets, sys, tempfile

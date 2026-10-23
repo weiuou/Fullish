@@ -11,6 +11,8 @@ class GeneratedImage:
 
 
 class ImageGenerator(Protocol):
-    async def generate(self, prompt: str) -> GeneratedImage: ...
+    async def generate(
+        self, prompt: str, *, reference_images: tuple[bytes, ...] = ()
+    ) -> GeneratedImage: ...
 
     async def close(self) -> None: ...

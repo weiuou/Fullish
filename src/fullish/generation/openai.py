@@ -43,7 +43,9 @@ class OpenAIImageGenerator:
         # Retain compatibility with older deployments configured with auto.
         return "gpt-image-2.5" if self.settings.model == "auto" else self.settings.model
 
-    async def generate(self, prompt: str) -> GeneratedImage:
+    async def generate(
+        self, prompt: str, *, reference_images: tuple[bytes, ...] = ()
+    ) -> GeneratedImage:
         with operation_trace():
             start = time.monotonic()
             model = await self.select_model()
@@ -55,12 +57,47 @@ class OpenAIImageGenerator:
                     or len(prompt) > MAX_PROMPT_CHARS
                 ):
                     raise ModelError("image_invalid_prompt")
+                if (
+                    len(reference_images) > 4
+                    or sum(len(body) for body in reference_images) > 20 * 1024 * 1024
+                    or any(
+                        not body
+                        or len(body) > MAX_GENERATED_IMAGE_BYTES
+                        or sniff_image_type(body) not in {"image/png", "image/jpeg", "image/webp"}
+                        for body in reference_images
+                    )
+                ):
+                    raise ModelError("image_invalid_reference")
+                request: dict = {"json": {"model": model, "prompt": prompt, "n": 1}}
+                endpoint = "images/generations"
+                if reference_images:
+                    endpoint = "images/edits"
+                    extensions = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+                    request = {
+                        "data": {"model": model, "prompt": prompt, "n": "1"},
+                        "files": [
+                            (
+                                "image[]",
+                                (
+                                    f"reference-{i}.{extensions[str(sniff_image_type(body))]}",
+                                    body,
+                                    sniff_image_type(body),
+                                ),
+                            )
+                            for i, body in enumerate(reference_images)
+                        ],
+                    }
                 async with asyncio.timeout(self.settings.timeout):
-                    emit("image_generation.request.started", model=model)
+                    emit(
+                        "image_generation.request.started",
+                        model=model,
+                        mode="edit" if reference_images else "generate",
+                        reference_count=len(reference_images),
+                    )
                     async with self.client.stream(
                         "POST",
-                        "images/generations",
-                        json={"model": model, "prompt": prompt, "n": 1},
+                        endpoint,
+                        **request,
                     ) as response:
                         response.raise_for_status()
                         body = bytearray()
@@ -84,6 +121,8 @@ class OpenAIImageGenerator:
                 emit(
                     "image_generation.completed",
                     model=model,
+                    mode="edit" if reference_images else "generate",
+                    reference_count=len(reference_images),
                     bytes_received=len(result.image),
                     elapsed_ms=elapsed_ms(start),
                 )
@@ -92,6 +131,8 @@ class OpenAIImageGenerator:
                 "image_generation.failed",
                 level="WARNING",
                 model=model,
+                mode="edit" if reference_images else "generate",
+                reference_count=len(reference_images),
                 error_code=code,
                 elapsed_ms=elapsed_ms(start),
             )

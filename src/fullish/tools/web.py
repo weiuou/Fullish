@@ -8,9 +8,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-
-class ToolError(RuntimeError):
-    """Safe codes only: upstream bodies and commands must not reach logs."""
+from fullish.tools.errors import ToolError
+from fullish.tools.images import image_candidates
 
 
 async def public_url(url: str) -> None:
@@ -91,7 +90,11 @@ class DeepSeekWeb:
                     )
                 }
             )
-        return {"results": results}
+        return {
+            "results": results,
+            "image_hint": "搜索返回网页而非图片。需要参考图时，找到相关官网页面后直接用 "
+            "web_image 打开该网页列出候选图，再打开选中的图片 URL；不要反复搜索图片直链。",
+        }
 
     async def fetch(self, url: str) -> dict:
         await public_url(url)
@@ -99,9 +102,16 @@ class DeepSeekWeb:
         if not isinstance(data.get("content"), str):
             raise ToolError("invalid_fetch_response")
         content = data["content"]
-        return {
+        result = {
             "url": url,
             "title": str(data.get("title", ""))[:200],
             "content": content[:10000],
             "truncated": len(content) > 10000,
         }
+        result["images"] = image_candidates(content[:10000], url)
+        if not result["images"]:
+            result["image_hint"] = (
+                "正文提取可能省略图片，不代表原网页没有图。需要参考图时，下一步调用 "
+                f"web_image(url={url}) 读取原网页的候选图片，不必重新搜索。"
+            )
+        return result
