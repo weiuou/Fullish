@@ -45,12 +45,14 @@ def test_message_content_keeps_stickers_and_images() -> None:
 def test_configured_qq_driver_and_model_lifecycle(tmp_path) -> None:
     # Isolate NoneBot's process-global driver, and prevent live QQ traffic in tests.
     code = """
+import os
 from unittest.mock import AsyncMock, patch
 import httpx
 import nonebot
 from fastapi.testclient import TestClient
 from fullish.app import create_app
 from fullish.qq import GroupOnlyAdapter
+os.environ.pop('AI_REPLY_POSTPROCESSING', None)
 with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
     app = create_app()
     adapter = nonebot.get_adapter(GroupOnlyAdapter)
@@ -71,9 +73,12 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
         assert result['image_model'] == 'gpt-image-2.5'
         assert result['fallback_model'] == 'gpt-6-luna'
         assert result['developer_menu_enabled'] is True
+        assert result['reply_postprocessing_enabled'] is True
+        assert result['reply_postprocessing_model'] == 'expression-test-model'
         assert client.get('/version').json()['mode'] == 'qq'
     assert app.state.model.client.is_closed
     assert app.state.model.image_generator.client.is_closed
+    assert app.state.reply_postprocessor.client.is_closed
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -82,6 +87,7 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
             "AI_BASE_URL": "http://localhost/v1",
             "AI_API_KEY": "fake-key",
             "AI_MODEL": "gemini-3.8-flash-high",
+            "AI_REPLY_MODEL": "expression-test-model",
             "QQ_ENABLED": "true",
             "QQ_APP_ID": "1234",
             "QQ_APP_SECRET": "fake-secret",

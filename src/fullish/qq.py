@@ -15,13 +15,21 @@ from fullish.conversation import Conversations
 from fullish.developer_menu import DeveloperMenu
 from fullish.message_queue import GroupMessageQueue
 from fullish.model import ModelError
-from fullish.sending.qq import send_reply
-from fullish.sending.schema import outgoing
+from fullish.sending.qq import prepare_replies
+from fullish.sending.schema import ReplyPlan, reply_messages
 from fullish.telemetry import elapsed_ms, emit, message_trace
 
 GENERATION_FAILURE_REPLY = "这次没能生成回复，暂时没处理好，请稍后再试。"
 IMAGE_FAILURE_REPLY = "这张图没能生成出来，这次没完成。"
 IMAGE_RATE_LIMIT_REPLY = "图片服务现在限流了，这张没生成出来，稍后再试。"
+MAX_EVENT_REPLIES = 5
+
+
+def remaining_replies(event: GroupMessageCreateEvent) -> int:
+    # NoneBot increments this before each send attempt, including failed uploads.
+    # Some replay/test event substitutes do not have the adapter's private field.
+    sequence = getattr(event, "_reply_seq", 0)
+    return max(0, MAX_EVENT_REPLIES - (sequence if isinstance(sequence, int) else 0))
 
 
 class GroupOnlyAdapter(Adapter):
@@ -98,6 +106,8 @@ async def handle_group(
         phase = "parse"
         outcome = "failed"
         fallback = False
+        sent_count = 0
+        reply_count = 0
         try:
             message = collect_group_message(event)
             emit(
@@ -136,23 +146,52 @@ async def handle_group(
                     reply = GENERATION_FAILURE_REPLY
                 fallback = True
             if reply:
+                candidates = reply_messages(reply)
+                reply_count = len(candidates)
                 if not conversations.reply_allowed(event.group_openid, reply):
                     emit("qq.reply.skipped", reason="group_policy_changed")
                     outcome = "no_reply"
                     return
+                if reply_count > remaining_replies(event):
+                    emit("qq.reply.skipped", reason="budget_exhausted", reply_count=reply_count)
+                    outcome = "no_reply"
+                    return
                 phase = "send"
-                send_start = time.monotonic()
-                candidate = outgoing(reply)
-                emit(
-                    "qq.send.started",
-                    text_chars=len(candidate.text),
-                    image_count=sum(part.kind == "image" for part in candidate.parts),
-                    audio_count=sum(part.kind == "audio" for part in candidate.parts),
-                )
-                await send_reply(bot, event, candidate)
-                emit("qq.send.succeeded", fallback=fallback, elapsed_ms=elapsed_ms(send_start))
-                phase = "record"
-                conversations.sent(event.group_openid, reply)
+                messages = await prepare_replies(reply)
+                for index, (candidate, prepared) in enumerate(
+                    zip(candidates, messages, strict=True)
+                ):
+                    # Check the whole remainder, so a revoked media permission also
+                    # prevents sending text that announces an image still to come.
+                    remainder = ReplyPlan(candidates[index:])
+                    if not conversations.reply_allowed(event.group_openid, remainder):
+                        emit("qq.reply.skipped", reason="group_policy_changed")
+                        outcome = "partial_sent" if sent_count else "no_reply"
+                        return
+                    if len(remainder.messages) > remaining_replies(event):
+                        emit("qq.reply.skipped", reason="budget_exhausted")
+                        outcome = "partial_sent" if sent_count else "no_reply"
+                        return
+                    phase = "send"
+                    send_start = time.monotonic()
+                    emit(
+                        "qq.send.started",
+                        text_chars=len(candidate.text),
+                        image_count=sum(part.kind == "image" for part in candidate.parts),
+                        audio_count=sum(part.kind == "audio" for part in candidate.parts),
+                        reply_index=index + 1,
+                        reply_count=reply_count,
+                    )
+                    await bot.send(event, prepared)
+                    sent_count += 1
+                    emit(
+                        "qq.send.succeeded",
+                        fallback=fallback,
+                        reply_index=index + 1,
+                        elapsed_ms=elapsed_ms(send_start),
+                    )
+                    phase = "record"
+                    conversations.sent(event.group_openid, candidate)
                 outcome = "fallback_sent" if fallback else "sent"
             else:
                 outcome = "no_reply"
@@ -160,8 +199,10 @@ async def handle_group(
             outcome = "cancelled"
             raise
         except ModelError as error:
+            outcome = "partial_sent" if sent_count else "failed"
             emit("qq.message.failed", level="WARNING", phase=phase, error_code=str(error))
         except ActionFailed as error:
+            outcome = "partial_sent" if sent_count else "failed"
             emit(
                 "qq.message.failed",
                 level="WARNING",
@@ -171,7 +212,16 @@ async def handle_group(
                 error_code=error.code if isinstance(error.code, int) else None,
             )
         except Exception as error:
+            outcome = "partial_sent" if sent_count else "failed"
             # No message payloads, API response bodies or credentials in our logs.
             emit("qq.message.failed", level="WARNING", phase=phase, error_type=type(error).__name__)
         finally:
-            emit("qq.message.completed", outcome=outcome, phase=phase, elapsed_ms=elapsed_ms(start))
+            emit(
+                "qq.message.completed",
+                outcome=outcome,
+                phase=phase,
+                sent_count=sent_count,
+                reply_count=reply_count,
+                partial_sent=0 < sent_count < reply_count,
+                elapsed_ms=elapsed_ms(start),
+            )

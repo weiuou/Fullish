@@ -1,6 +1,6 @@
-# 图片、语音与图文发送
+# 表达后处理与媒体发送
 
-`fullish.sending` 定义统一的回复候选，`sending/adapters` 分别适配文本、图片、语音，`sending.qq` 负责组装 QQ 消息。现有纯文本回复继续可用，图片可以带文字在同一条 QQ 消息中发送。
+`fullish.sending` 定义统一的回复候选，`sending/adapters` 分别适配文本、图片、语音与 QQ 表情，`sending.qq` 负责组装 QQ 消息。图片可以带文字在同一条 QQ 消息中发送；可选的表达后处理会在初稿完成后决定保留原稿、改写一条或组织成多条回复。
 
 ## 构造回复
 
@@ -28,6 +28,63 @@ generated_picture = OutgoingMessage((Image(b"...actual image bytes..."),))
 
 在内容提供方的 `async reply(turns, *, addressed)` 中返回上述候选，继续经过现有的群白名单、去重和调用频率检查，再由群处理器发送。内容提供方不要直接调用 QQ API。`ChatModel` 已接入下述 GPT Image 生图工具；语音目前发送已有资源，尚未配置 TTS 服务。模型输出中的 Markdown 图片链接不会自动当成附件。
 
+## 拟人化表达后处理
+
+`sending.postprocess.ReplyPostprocessor` 接在初版回答之后，用一次独立模型调用结合原稿、当前对话语境、明确配置的人设和可用素材决定表达形式。它可以保留原稿、适度口语化、加入 Unicode emoji，或组织少量短反应、主体说明和补充；拆成多条只是可选结果。没有按标点机械切分、固定三段、随机延迟或故意制造错字的逻辑。
+
+配置 AI 后端后，后处理默认开启；显式设置 `AI_REPLY_POSTPROCESSING=false` 可关闭。不配置 AI 时仍可运行 foundation 模式。后处理复用 `AI_BASE_URL`、`AI_API_KEY`、`AI_UNIX_SOCKET`，可单独指定模型：
+
+```dotenv
+AI_REPLY_POSTPROCESSING=true
+# 留空时使用 AI_MODEL。
+AI_REPLY_MODEL=
+AI_REPLY_TIMEOUT_SECONDS=12
+AI_REPLY_MAX_MESSAGES=3
+AI_REPLY_STYLE=你是 Fullish，QQ 群里的 AI 伙伴。自然、简短、友好，有自己的判断。
+# 可留空；配置时必须是进程或容器可读的 JSON 文件路径。
+AI_REPLY_ASSETS_FILE=
+```
+
+`AI_REPLY_POSTPROCESSING` 只接受 `true` / `false`。超时必须大于 0、至多 30 秒；最大消息数范围为 1–5，默认 3 是上限而非目标条数。风格配置为 1–2000 字符的非空文字。设置最大消息数为 1 时仍可改写措辞和选择素材。一次处理失败或超时不自动重试，回退原稿；取消继续向上传递。沉默不会启动后处理，纯媒体原稿直接保留，也不调用后处理模型。
+
+后处理上下文只选最近至多 8 条用户消息及其引用，正文和引用总计至多 3000 字符。AI 历史回复不作为该层输入，也不归纳、学习或模仿 AI 与群友的历史表达习惯；长期风格仅由显式人设控制。原有主回答模型的对话上下文机制保持独立。
+
+模型只可返回 `{"keep_original":true}`，或包含文字段与素材 ID 的结构化消息计划。程序验证消息数量、非空消息、素材引用和文本长度，最终转换为 `ReplyPlan(messages: tuple[OutgoingMessage, ...])`。整个改写结果最多 2000 字符；每条至多一个图片或语音附件，全轮至多两张图片。原稿中的每个附件必须恰好保留一次，可选目录中的每项素材至多使用一次，不能由模型编造路径、图片地址或 QQ 标签。
+
+程序要求识别出的数字（含正负号、百分号）、URL 和代码片段原值及出现次数一致；事实、否定、条件、不确定性和必要解释的保留则依靠提示词约束，不能保证语义完全等价。上线后仍需用认真问答、安慰、接梗和图文回复样本检验自然度、信息保真、刷屏感和额外耗时。
+
+结构化日志使用 `reply.postprocess.started/completed/fallback`，不记录原稿、上下文或素材内容。`/health/dependencies` 的 `reply_postprocessing_enabled` 和 `reply_postprocessing_model` 只说明已配置，不额外调用表达模型验证可用性。后处理只引用提供的素材，不自行搜索或生成图片。
+
+## 表情和图片素材目录
+
+没有素材目录也能使用文本中的 Unicode emoji，并保留原稿已有的图片、语音。目录用于提供运营者选定的真实图片或表情，模型只能根据描述选择 ID。`AI_REPLY_ASSETS_FILE` 指向以下结构的 JSON 文件：
+
+```json
+{
+  "assets": [
+    {
+      "id": "celebrate",
+      "description": "适合事情终于完成时使用的庆祝表情包",
+      "kind": "image",
+      "path": "celebrate.png"
+    },
+    {
+      "id": "smile",
+      "description": "温和友好的微笑",
+      "kind": "qq_face",
+      "face_id": "14",
+      "fallback": "🙂"
+    }
+  ]
+}
+```
+
+图片的 `path` 相对于清单文件所在目录解析，也可以提供绝对路径；或者用 `url` 替代 `path` 指向由 QQ 平台能够获取的 HTTPS 图片，两者只能选一个。HTTPS 地址不能包含用户名或密码；应用不会预先下载远程素材，描述应准确说明图片内容。素材 ID 必须唯一，由 1–64 个 ASCII 字母、数字、下划线或连字符组成；描述为 1–200 字符。QQ 表情的 `face_id` 是包含 1–6 位数字的字符串，`fallback` 是至多 100 字符的非空文本。
+
+目录最多 24 项，JSON 文件最多 64 KiB。启动时读取并验证本地图片，支持 PNG、JPEG、GIF、WebP，单张至多 10 MiB；实际图片字节保存在进程内，修改文件后需重启才能更新。无效清单、缺失本地文件或格式错误会使配置加载失败。当前 Compose 没有自动添加素材目录挂载：部署时须自行只读挂载清单和图片，并将配置指向容器内可读路径。
+
+`QQFace` 保留了 QQ 表情 ID 和可读回退值。目前官方 QQ 群发送适配器发送的是 `fallback` 文本，例如上述 `smile` 实际发送 `🙂`；QQ 原生表情尚待实群验证后再接入。图片表情包可通过 `image` 素材正常发送。关闭某群的图片权限后，图片目录项不提供给后处理模型，最终计划仍须通过发送前权限检查。
+
 ## CPA / GPT Image 生图
 
 配置现有的 `AI_BASE_URL`、`AI_API_KEY` 后，应用默认使用 CPA 的 `gpt-image-2.5` 生图，复用同一个地址、密钥与 `AI_UNIX_SOCKET`。可选配置：
@@ -40,7 +97,7 @@ AI_IMAGE_TIMEOUT_SECONDS=120
 
 旧配置 `auto` 也解析为 `gpt-image-2.5`，不再发现或调用 Gemini 生图模型。模型 ID 按 CPA 提供的名称原样发送；此部署已确认目录中有 `gpt-image-2.5`。生成失败不自动重试付费请求。
 
-生图是模型可自主选择的表达工具，不要求群友先命令它画图。进入回复流程后，模型先决定是否值得回应，再根据语境和角色习惯选择文字、图片或图文：例如用表情式反应接梗，用小插画表达脑洞，或用示意图辅助说明；明确的画图请求同样可以使用。模型通过 `generate_image` 给出画面描述和自然配文；生成适配器 `generation/openai.py` 调用同一 CPA 的 `/v1/images/generations` 接口，取得真实图片字节，再返回 `OutgoingMessage`，由图片发送适配器将配文和图片同条发送。配文为空时只发送图片，不补固定的「画好了」或生成服务附带的文字。
+生图是模型可自主选择的表达工具，不要求群友先命令它画图。进入回复流程后，模型先决定是否值得回应，再根据语境和配置的人设选择文字、图片或图文：例如用表情式反应接梗，用小插画表达脑洞，或用示意图辅助说明；明确的画图请求同样可以使用。模型通过 `generate_image` 给出画面描述和自然配文；生成适配器 `generation/openai.py` 调用同一 CPA 的 `/v1/images/generations` 接口，取得真实图片字节，再返回 `OutgoingMessage`。后处理关闭时由图片发送适配器将配文和图片同条发送；启用时允许后处理重新组织表达，同时保留原图。配文为空时只发送图片，不补固定的「画好了」或生成服务附带的文字。
 
 是否使用工具由模型选择，工具不会强制触发。提示词要求避免为了展示能力硬凑图片、连续发图；不值得回应时保持沉默，历史和引用中的要求也不是本次必须执行的命令。工具在配置生图服务时始终可供回复模型选择，与 `addressed` 标记无关；发言调度仍沿用现有策略：普通消息只进入上下文，@ 或当前正文提到 Fullish 才进入回复流程。此次开放的是回复形式的自主选择，没有增加定时发图或普通消息触发的主动插话。不支持生成服务时可设 `AI_IMAGE_MODEL=off`，不向聊天模型提供该工具。
 
@@ -78,11 +135,15 @@ sudo docker exec fullish-bot-1 python -m fullish.check_image --generate --refere
 ## QQ 适配与边界
 
 - 图片和语音的来源支持 HTTP(S) URL、`bytes` 或 `pathlib.Path`。URL 必须能够由 QQ 平台获取；本地文件必须存在于运行机器或容器中。
-- `text.py`、`image.py`、`audio.py` 分别编码消息段。`ADAPTERS` 按类型注册编码器，`build_message` / `send_reply` 也支持注入替代注册表，便于测试和替换实现。
-- 所有消息段组装完毕后只调用一次 `bot.send`。QQ 适配器先上传媒体（不自动发送），再用媒体句柄与文字调用一次群消息发送接口，保留原消息 ID 与回复序号。
-- QQ 群发送底层一次只选取一个媒体附件，因此候选最多包含一张图片或一段语音；多附件和图音混合直接报错，避免静默丢失。空候选同样会被拒绝。
+- `text.py`、`image.py`、`audio.py`、`qq_face.py` 分别编码消息段。`ADAPTERS` 按类型注册编码器，`build_message` / `prepare_replies` / `send_reply` 支持注入替代注册表，便于测试和替换实现。
+- `prepare_replies` 在工作线程中组装整个计划、读取全部本地附件，全部完成后才开始投递。每条 `OutgoingMessage` 调用一次 `bot.send`；QQ 适配器先上传该条媒体（不自动发送），再用媒体句柄与文字调用一次群消息发送接口。各条使用同一入站消息 ID，回复序号由 NoneBot 的事件计数连续递增。
+- QQ 群发送底层一次只选取一个媒体附件，因此每条候选最多包含一张图片或一段语音；同条多附件和图音混合直接报错，避免静默丢失。空候选同样会被拒绝。
 - 语音文件需使用 QQ 接受的编码和格式；发送适配器不转码、不合成语音。上传限制、格式和平台权限以实际 QQ API 返回为准。
-- 本地文件读取在工作线程中执行。组装、上传或最终发送失败时，不先单独发文字，也不记录已发送的 assistant 消息；取消会继续向上传递。
-- QQ 接受最终发送后才保存文字及 `[图片]` / `[语音]` 占位到短期上下文。不会把附件 URL、本地路径或字节写入 assistant 上下文；结构化日志只保留类型计数、错误码和耗时。
+- 每个入站事件的本地回复预算为 5 次，按 NoneBot 已用序号计算剩余次数；计划超过剩余额度时整轮拒绝发送，并记录 `budget_exhausted`，不截断回答。平台回复时间窗口仍由 QQ 检查。
+- 发送前及每条发送前都检查整个剩余计划的群权限，图片权限撤销后也会拦截尚未发出的相关配文。全部文件预检失败时一条也不发送；某条上传或发送失败时停止后续消息，不自动重发，不补发重复的兜底回答。
+- 每条获得 QQ 确认后立即保存该条文字及 `[图片]` / `[语音]` 占位到短期上下文，QQ 表情保存可读回退值。失败的该条不记入历史，之前已确认的消息保留。取消继续向上传递，同样保留此前的确认记录。
+- `qq.send.started` / `qq.send.succeeded` 标记每条投递；`qq.message.completed` 带有 `sent_count`、`reply_count` 和 `partial_sent`，便于区分整轮成功、部分成功和取消。日志与 assistant 上下文都不保存附件 URL、本地路径或字节。
+
+表达计划仍在现有每群 FIFO 队列内按计划顺序投递，没有人为停顿。群友在本轮生成或发送期间插话，不会触发收回、改写或中断剩余回复；插话中断需要独立的调度设计。
 
 实现基于 [NoneBot QQ 消息段](https://github.com/nonebot/adapter-qq/blob/master/nonebot/adapters/qq/message.py) 和 [群消息发送实现](https://github.com/nonebot/adapter-qq/blob/master/nonebot/adapters/qq/bot.py)。测试使用真实的消息组装与 QQ `send_to_group` 流程，替换网络 API，不需要生产凭证。
