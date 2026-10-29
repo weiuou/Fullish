@@ -110,31 +110,31 @@ def test_creation_does_not_overwrite_or_expose_key(tmp_path, capsys):
     assert (directory / "keystore.json").read_bytes() == original
 
 
-def test_bnb_signature_restart_and_event_idempotency(settings):
+def test_token_signature_restart_and_event_idempotency(settings):
     rpc = RPC()
 
     async def run():
         wallet = open_wallet(settings, rpc)
-        first = await wallet.transfer("event", DESTINATION, "0.123456789012345678")
+        first = await wallet.transfer("event", DESTINATION, "0.123456789012345678", TOKEN)
         raw = rpc.sent[0]
         assert Account.recover_transaction(raw) == wallet.address
         fields = rlp.decode(bytes.fromhex(raw[2:]))
-        assert fields[3].hex() == DESTINATION[2:]
-        assert int.from_bytes(fields[4]) == 123456789012345678
+        assert fields[3].hex() == TOKEN[2:]
+        assert int.from_bytes(fields[4]) == 0
         assert (int.from_bytes(fields[6]) - 35) // 2 == 56
         await wallet.close()
         wallet = open_wallet(settings, rpc)
         try:
-            second = await wallet.transfer("event", DESTINATION, "0.1234567890123456780")
+            second = await wallet.transfer("event", DESTINATION, "0.1234567890123456780", TOKEN)
             assert first["tx_hash"] == second["tx_hash"]
             assert len(set(rpc.sent)) == 1
             with pytest.raises(ToolError, match="one_transfer_per_message"):
-                await wallet.transfer("event", DESTINATION, "0.2")
+                await wallet.transfer("event", DESTINATION, "0.2", TOKEN)
             with pytest.raises(ToolError, match="pending_transaction"):
-                await wallet.transfer("new-event", DESTINATION, "0.1")
+                await wallet.transfer("new-event", DESTINATION, "0.1", TOKEN)
             rpc.receipts[first["tx_hash"]] = {"transactionHash": first["tx_hash"], "status": "0x1"}
             assert (await wallet.transaction(first["tx_hash"]))["status"] == "confirmed"
-            await wallet.transfer("new-event", DESTINATION, "0.1")
+            await wallet.transfer("new-event", DESTINATION, "0.1", TOKEN)
             assert len(set(rpc.sent)) == 2
             public = json.dumps(await wallet.info())
             assert raw not in public and "unlock" not in public and "raw" not in public
@@ -150,17 +150,32 @@ def test_timeout_preserves_signed_payment_and_concurrent_retry(settings):
 
     async def run():
         wallet = open_wallet(settings, rpc)
-        first = await wallet.transfer("event", DESTINATION, "0.1")
+        first = await wallet.transfer("event", DESTINATION, "0.1", TOKEN)
         assert first["status"] == "broadcast_unknown"
         await wallet.close()
         rpc.timeout = False
         wallet = open_wallet(settings, rpc)
         try:
             results = await asyncio.gather(
-                *[wallet.transfer("event", DESTINATION, "0.1") for _ in range(2)]
+                *[wallet.transfer("event", DESTINATION, "0.1", TOKEN) for _ in range(2)]
             )
             assert {x["tx_hash"] for x in results} == {first["tx_hash"]}
             assert len(set(rpc.sent)) == 1
+        finally:
+            await wallet.close()
+
+    asyncio.run(run())
+
+
+def test_bnb_transfer_is_rejected_before_broadcast(settings):
+    rpc = RPC()
+
+    async def run():
+        wallet = open_wallet(settings, rpc)
+        try:
+            with pytest.raises(ToolError, match="bnb_reserved_for_gas"):
+                await wallet.transfer("event", DESTINATION, "0.1")
+            assert not rpc.sent
         finally:
             await wallet.close()
 
@@ -194,7 +209,7 @@ def test_invalid_amounts_cannot_sign(settings, amount):
         wallet = open_wallet(settings, rpc)
         try:
             with pytest.raises(ToolError):
-                await wallet.transfer("event", DESTINATION, amount)
+                await wallet.transfer("event", DESTINATION, amount, TOKEN)
             assert not rpc.sent
         finally:
             await wallet.close()
@@ -208,13 +223,13 @@ def test_wrong_chain_or_insufficient_fee_cannot_sign(settings, failure):
     if failure == "chain":
         rpc.chain = "0x1"
     else:
-        rpc.balance = 10**17
+        rpc.balance = 0
 
     async def run():
         wallet = open_wallet(settings, rpc)
         try:
             with pytest.raises(ToolError, match="wrong_chain|insufficient_bnb"):
-                await wallet.transfer("event", DESTINATION, "0.1")
+                await wallet.transfer("event", DESTINATION, "0.1", TOKEN)
             assert not rpc.sent
         finally:
             await wallet.close()
@@ -250,7 +265,7 @@ def test_wallet_mcp_discovery_permissions_and_host_metadata(settings, tmp_path, 
             )
             assert "event_key" not in transfer["parameters"]["properties"]
             assert not runtime.schemas(ToolContext("other", "member", "message"))
-            args = {"to_address": DESTINATION, "amount": "0.1"}
+            args = {"to_address": DESTINATION, "amount": "0.1", "token_address": TOKEN}
             with pytest.raises(ToolError, match="trusted_event_required"):
                 await client.mcp.call("wallet_transfer", args)
             rejected = json.loads(

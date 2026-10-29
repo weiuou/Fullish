@@ -47,7 +47,7 @@ def create_server(
     async def wallet_transfer(
         ctx: Context, to_address: str, amount: str, token_address: str = ""
     ) -> dict[str, object]:
-        """自主转账，无需逐笔确认。amount 是十进制字符串；合约留空转 BNB，否则转 BEP-20。
+        """自主转账，无需逐笔确认。amount 是十进制字符串；必须填写 BEP-20 合约地址。BNB 仅用于 gas。
 
         每条消息最多一笔；重试同一请求复用同一交易。submitted 不代表到账，需查询交易状态。
         """

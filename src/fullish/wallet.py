@@ -298,8 +298,10 @@ class BSCWallet:
     async def transfer(
         self, event_key: str, to_address: str, amount: str, token_address: str = ""
     ) -> dict:
+        if not token_address:
+            raise ToolError("wallet_bnb_reserved_for_gas")
         to = recipient(to_address)
-        token = recipient(token_address) if token_address else ""
+        token = recipient(token_address)
         # Validate before even opening a network connection; normalize equivalent amounts.
         units(amount, 36)
         normalized_amount = amount.rstrip("0").rstrip(".") if "." in amount else amount

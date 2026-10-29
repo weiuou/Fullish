@@ -101,7 +101,7 @@ DEFINITIONS = {
     "wallet_transfer": (
         WalletTransferArgs,
         "从你自己的 Fullish 钱包自主转账，无需逐笔人工确认。仅限 BSC；"
-        "amount 是十进制数量字符串。token_address 留空转 BNB，填写合约地址转 BEP-20。"
+        "amount 是代币的十进制数量字符串，token_address 必须填写 BEP-20 合约地址；BNB 仅用于 gas。"
         "每条平台消息最多一笔付款，重试相同请求复用同一交易；广播不等于到账。",
     ),
     "wallet_transaction": (
