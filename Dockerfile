@@ -31,7 +31,8 @@ ENV APP_REVISION=$APP_REVISION \
 RUN groupadd --gid 10001 fullish \
     && useradd --uid 10001 --gid fullish --no-create-home --home-dir /tmp fullish \
     && install -d -m 700 -o 10001 -g 10001 /var/lib/fullish/tool-audit \
-    && install -d -m 750 -o 10001 -g 10001 /var/lib/fullish/control
+    && install -d -m 750 -o 10001 -g 10001 /var/lib/fullish/control \
+    && install -d -m 700 -o 10001 -g 10001 /var/lib/fullish/wallet
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 USER 10001:10001

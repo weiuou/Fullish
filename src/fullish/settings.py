@@ -181,3 +181,39 @@ class ToolSettings:
                 "SANDBOX_SOCKET requires an absolute Unix socket path and SANDBOX_TOKEN (32+ chars)"
             )
         return cls(groups, key, socket, token)
+
+
+@dataclass(frozen=True)
+class WalletSettings:
+    directory: Path
+    allowed_groups: frozenset[str]
+    rpc_url: str = field(default="https://bsc-dataseed.bnbchain.org", repr=False)
+
+    def allows_group(self, group_id: str) -> bool:
+        return "*" in self.allowed_groups or group_id in self.allowed_groups
+
+    @classmethod
+    def from_env(cls) -> Self | None:
+        enabled = os.environ.get("WALLET_ENABLED", "false").strip().lower()
+        if enabled not in {"true", "false"}:
+            raise ValueError("WALLET_ENABLED must be true or false")
+        if enabled == "false":
+            return None
+        groups = frozenset(
+            x.strip() for x in os.environ.get("WALLET_ALLOWED_GROUPS", "").split(",") if x.strip()
+        )
+        if not groups or (
+            groups != {"*"} and any(not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", x) for x in groups)
+        ):
+            raise ValueError("Wallet requires explicit WALLET_ALLOWED_GROUPS OpenIDs or *")
+        rpc = os.environ.get("WALLET_RPC_URL", cls.rpc_url).strip()
+        url = urlsplit(rpc)
+        if (
+            url.scheme != "https"
+            or not url.hostname
+            or url.username
+            or url.password
+            or url.fragment
+        ):
+            raise ValueError("WALLET_RPC_URL must use HTTPS without embedded credentials")
+        return cls(Path(os.environ.get("WALLET_DIR", ".state/wallet")), groups, rpc)

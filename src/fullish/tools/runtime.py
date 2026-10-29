@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import sqlite3
@@ -9,7 +10,7 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 from uuid import uuid4
 
 import httpx
@@ -22,6 +23,9 @@ from fullish.telemetry import elapsed_ms, emit, reference, trace_id
 from fullish.tool_audit import ToolAudit
 from fullish.tools.images import PublicImages
 from fullish.tools.web import DeepSeekWeb, ToolError
+
+if TYPE_CHECKING:
+    from fullish.mcp_client import WalletMCPClient
 
 
 @dataclass(frozen=True)
@@ -71,7 +75,40 @@ class DownloadArgs(BaseModel):
     path: str = Field(min_length=1, max_length=512)
 
 
+class WalletInfoArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    token_address: str = Field(default="", max_length=42)
+
+
+class WalletTransferArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    to_address: str = Field(min_length=42, max_length=42)
+    amount: str = Field(min_length=1, max_length=116)
+    token_address: str = Field(default="", max_length=42)
+
+
+class WalletTransactionArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    tx_hash: str = Field(min_length=66, max_length=66)
+
+
 DEFINITIONS = {
+    "wallet_info": (
+        WalletInfoArgs,
+        "查看你自己的 Fullish BSC 钱包地址、BNB 余额和最近交易。"
+        "token_address 可选，填写已核实的 BEP-20 合约地址时还查询其余额。",
+    ),
+    "wallet_transfer": (
+        WalletTransferArgs,
+        "从你自己的 Fullish 钱包自主转账，无需逐笔人工确认。仅限 BSC；"
+        "amount 是十进制数量字符串。token_address 留空转 BNB，填写合约地址转 BEP-20。"
+        "每条平台消息最多一笔付款，重试相同请求复用同一交易；广播不等于到账。",
+    ),
+    "wallet_transaction": (
+        WalletTransactionArgs,
+        "按 tx_hash 查询 Fullish 已签名交易的状态。submitted 或 pending 表示等待；"
+        "confirmed 表示链上执行成功，reverted 表示失败且可能消耗手续费。",
+    ),
     "web_search": (
         SearchArgs,
         "搜索公开网页，返回网页而非图片。找到目标网页后，用 web_image "
@@ -116,9 +153,11 @@ class ToolRuntime:
         image_transport=None,
         audit: ToolAudit | None = None,
         policies: GroupPolicies | None = None,
+        wallet: "WalletMCPClient | None" = None,
     ):
         self.settings = settings
         self.policies = policies
+        self.wallet = wallet
         self.audit = (
             audit
             if audit is not None
@@ -153,13 +192,15 @@ class ToolRuntime:
         self.images = PublicImages(transport=image_transport)
 
     async def close(self) -> None:
+        if self.wallet:
+            await self.wallet.close()
         await self.images.close()
         if self.web:
             await self.web.close()
         if self.sandbox:
             await self.sandbox.aclose()
 
-    def allowed(self, context: ToolContext | None) -> bool:
+    def base_allowed(self, context: ToolContext | None) -> bool:
         return bool(
             context
             and (
@@ -170,6 +211,26 @@ class ToolRuntime:
             and context.sender_id
             and context.message_id
         )
+
+    def wallet_allowed(self, context: ToolContext | None) -> bool:
+        return bool(
+            self.wallet
+            and context
+            and context.sender_id
+            and context.message_id
+            and self.wallet.settings.allows_group(context.group_id)
+            and (not self.policies or self.policies.features(context.group_id).chat)
+        )
+
+    def allowed(self, context: ToolContext | None) -> bool:
+        return self.base_allowed(context) or self.wallet_allowed(context)
+
+    async def prepare(self, context: ToolContext | None) -> None:
+        if self.wallet and self.wallet_allowed(context):
+            try:
+                await self.wallet.prepare()
+            except ToolError:
+                emit("tool.mcp.unavailable", level="WARNING", server="wallet")
 
     def schemas(self, context: ToolContext | None) -> list[dict]:
         if not self.allowed(context):
@@ -188,7 +249,9 @@ class ToolRuntime:
             )
             + (["web_image"] if features is None or features.allows("search") else [])
         )
-        return [
+        if not self.base_allowed(context):
+            names = []
+        schemas = [
             {
                 "type": "function",
                 "function": {
@@ -199,6 +262,9 @@ class ToolRuntime:
             }
             for name in names
         ]
+        if self.wallet and self.wallet_allowed(context):
+            schemas += self.wallet.mcp.schemas
+        return schemas
 
     def charge(self, context: ToolContext) -> None:
         now = time.monotonic()
@@ -283,7 +349,21 @@ class ToolRuntime:
                 raise ToolError("invalid_tool_arguments") from None
             self.charge(context)
             async with asyncio.timeout(40):
-                if isinstance(arguments, SearchArgs) and self.web:
+                if isinstance(arguments, WalletInfoArgs) and self.wallet:
+                    data = await self.wallet.info(arguments.token_address)
+                elif isinstance(arguments, WalletTransferArgs) and self.wallet:
+                    # Identity and idempotency are derived from the actual QQ event.
+                    event_key = hashlib.sha256(
+                        json.dumps(
+                            [context.group_id, context.sender_id, context.message_id]
+                        ).encode()
+                    ).hexdigest()
+                    data = await self.wallet.transfer(
+                        event_key, group_id=context.group_id, **arguments.model_dump()
+                    )
+                elif isinstance(arguments, WalletTransactionArgs) and self.wallet:
+                    data = await self.wallet.transaction(arguments.tx_hash)
+                elif isinstance(arguments, SearchArgs) and self.web:
                     data = await self.web.search(arguments.query)
                 elif isinstance(arguments, FetchArgs) and self.web:
                     data = await self.web.fetch(arguments.url)
@@ -350,6 +430,8 @@ class ToolRuntime:
             code = str(error)
         except (httpx.HTTPError, TimeoutError):
             code = "tool_unavailable_or_timeout"
+        except sqlite3.Error:
+            code = "tool_storage_busy_or_unavailable"
         except (ValueError, TypeError):
             code = "invalid_tool_response"
         except asyncio.CancelledError:

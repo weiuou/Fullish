@@ -11,6 +11,7 @@ services:
     environment:
       TOOL_AUDIT_PATH: /var/lib/fullish/tool-audit/audit.sqlite3
       GROUP_CONTROL_DIR: /var/lib/fullish/control
+      WALLET_DIR: /var/lib/fullish/wallet
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
@@ -19,6 +20,7 @@ services:
       - /run/fullish-sandbox:/run/fullish-sandbox:ro
       - tool-audit:/var/lib/fullish/tool-audit
       - /var/lib/fullish-control:/var/lib/fullish/control
+      - /var/lib/fullish-wallet:/var/lib/fullish/wallet
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m

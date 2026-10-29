@@ -23,6 +23,7 @@ from fullish.settings import (
     QQSettings,
     ReplyPostprocessSettings,
     ToolSettings,
+    WalletSettings,
 )
 from fullish.telemetry import emit
 
@@ -34,10 +35,11 @@ def create_app() -> FastAPI:
     qq_settings = QQSettings.from_env()
     report_settings = DeploymentReportSettings.from_env()
     tool_settings = ToolSettings.from_env()
+    wallet_settings = WalletSettings.from_env()
     reply_settings = ReplyPostprocessSettings.from_env(default_enabled=model_settings is not None)
     if reply_settings and not model_settings:
         raise ValueError("Reply postprocessing requires the AI backend")
-    if tool_settings and not model_settings:
+    if (tool_settings or wallet_settings) and not model_settings:
         raise ValueError("Tools require the AI backend")
     if report_settings and (not qq_settings or not model_settings):
         raise ValueError("Deployment reports require QQ and the AI backend")
@@ -73,11 +75,20 @@ def create_app() -> FastAPI:
     app.state.ready = False
     revision = os.environ.get("APP_REVISION", "dev")
     mode = "qq" if qq_settings else "ai_configured" if model_settings else "foundation"
+    from fullish.mcp_client import WalletMCPClient
     from fullish.tools import ToolRuntime
 
     control = GroupControl.from_env() if qq_settings else None
     policies = control.policies if control else None
-    tools = ToolRuntime(tool_settings, policies=policies) if tool_settings else None
+    tools = (
+        ToolRuntime(
+            tool_settings or ToolSettings(frozenset()),
+            policies=policies,
+            wallet=WalletMCPClient(wallet_settings) if wallet_settings else None,
+        )
+        if tool_settings or wallet_settings
+        else None
+    )
     image_settings = ImageGenerationSettings.from_env() if model_settings else None
     image_generator = (
         OpenAIImageGenerator(model_settings, image_settings)
@@ -193,6 +204,8 @@ def create_app() -> FastAPI:
             "tools_enabled": tools is not None,
             "search_configured": bool(tool_settings and tool_settings.deepseek_key),
             "sandbox_configured": bool(tool_settings and tool_settings.sandbox_socket),
+            "wallet_enabled": bool(tools and tools.wallet),
+            "wallet_address": tools.wallet.address if tools and tools.wallet else "",
             "developer_menu_enabled": control is not None,
             "reply_postprocessing_enabled": postprocessor is not None,
             "reply_postprocessing_model": postprocessor.model if postprocessor else "",
