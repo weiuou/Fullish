@@ -26,9 +26,11 @@ fi
 
 install -d -m 700 "$root" "$root/bin" "$root/state"
 install -d -m 750 /var/lib/fullish-control
+install -d -m 700 /var/lib/fullish-wallet
 # Older install implementations resolve numeric owners as account names. The bot
 # UID does not need a matching host login; use numeric chown through Python.
 python3 -c 'import os; os.chown("/var/lib/fullish-control", 10001, 10001)'
+python3 -c 'import os; os.chown("/var/lib/fullish-wallet", 10001, 10001)'
 exec 9>"$root/.deploy.lock"
 flock -n 9 || die 'A deployment is running. Try setup again after it finishes.'
 staging="$root/setup-staging.$$"

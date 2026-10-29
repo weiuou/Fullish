@@ -96,6 +96,13 @@ sandbox_enabled() { grep -Eq '^SANDBOX_(SOCKET|TOKEN)=.+' "$root/runtime.env"; }
 if sandbox_enabled; then
     timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -m fullish.sandbox_check
 fi
+wallet_enabled() {
+    # An explicit rollback may target an image from before wallet support existed.
+    (( rollback_mode == 0 )) && grep -Eiq '^WALLET_ENABLED=true[[:space:]]*$' "$root/runtime.env"
+}
+if wallet_enabled; then
+    timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -m fullish.wallet_check
+fi
 apply_started=1
 # Single active sender: stop old application before starting its replacement.
 timeout 45 "${compose[@]}" stop --timeout 30 bot
@@ -106,6 +113,9 @@ container=$("${compose[@]}" ps --quiet bot)
 [[ $(docker inspect --format '{{.Config.Image}}' "$container") == "$target" ]] || die 'Running image does not match the requested digest.'
 if sandbox_enabled; then
     timeout 90 docker exec "$container" python -m fullish.sandbox_check
+fi
+if wallet_enabled; then
+    timeout 90 docker exec "$container" python -m fullish.wallet_check
 fi
 
 if [[ $current != "$target" ]]; then previous=$current; fi
