@@ -10,7 +10,7 @@ QQ 真实事件 → 群权限与参数校验 → MCP client → stdio MCP wallet
                                          加密密钥与持久交易记录
 ```
 
-采用官方 Python MCP SDK。Fullish 使用 `tools/list` 发现工具定义，转换为当前聊天 API 的 `tool_calls`，通过 `tools/call` 执行。MCP 与模型调用各承担一层协议职责。当前支持运营者控制的本地 stdio 钱包服务；尚未提供任意远程 MCP URL、OAuth 或第三方服务器配置入口。既有搜索和沙箱继续使用原来的调用方式。
+采用官方 Python MCP SDK。Fullish 使用 `tools/list` 发现工具定义，转换为当前聊天 API 的 `tool_calls`，通过 `tools/call` 执行。MCP 与模型调用各承担一层协议职责。钱包使用运营者控制的本地 stdio 服务和专用身份适配；其他服务器可通过[动态 MCP 配置](mcp.md)接入。当前不提供 OAuth 授权流程。既有搜索和沙箱继续使用原来的调用方式。
 
 签名仅在钱包子进程中进行。stdio 不监听网络端口；启动钱包进程时只额外传入钱包配置，不传递 CPA、QQ 或搜索密钥。子进程与 bot 使用相同系统用户，属于进程分离，不能防御 bot 进程或宿主机被完全控制；强隔离需要另行部署为不同身份或远程签名服务。
 

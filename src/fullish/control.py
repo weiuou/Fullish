@@ -12,13 +12,26 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fullish.group_policy import GROUP_ID, GroupPolicies, PolicyError, legacy_policy
+from fullish.mcp_servers import MCPStore, ServerConfig
 
 NAMES = {"聊天": "chat", "搜索": "search", "生图": "image", "沙箱": "sandbox"}
 MENU = (
     "开发者菜单\n群列表：查看群编号\n选择 1：管理指定群\n状态：查看当前群\n"
     "开启 搜索 / 关闭 生图：切换功能\n默认 开启 搜索：设置新群默认功能\n"
-    "命名 我的群：给当前群加备注\n菜单：返回这里"
+    "命名 我的群：给当前群加备注\nMCP：管理动态工具服务器\n菜单：返回这里"
 )
+MCP_MENU = (
+    "MCP 列表\nMCP 添加 名称 https://服务地址/mcp\n"
+    "MCP 添加 名称 env:MCP_专用地址变量\nMCP 检查 名称\n"
+    "选择群后：MCP 授权 名称 / MCP 撤销 名称\n"
+    "MCP 限定 名称 工具1,工具2（* 为全部）\n"
+    "MCP 停用 名称 / MCP 启用 名称 / MCP 删除 名称\n"
+    "添加后需单独授权群。密钥由服务器环境配置，请勿私聊发送。"
+)
+
+
+class MCPCheck(str):
+    """An authorized, deduplicated request for the asynchronous menu handler."""
 
 
 def fingerprint(value: str) -> str:
@@ -32,6 +45,7 @@ class GroupControl:
         self.path = directory / "control.sqlite3"
         fresh = not self.path.exists()
         self.policies = GroupPolicies(directory / "policy.json")
+        self.mcp = MCPStore(directory)
         fd = os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600)
         os.close(fd)
         with self.connection() as db:
@@ -90,7 +104,7 @@ class GroupControl:
     def command(self, user: str, message_id: str, text: str) -> str | None:
         if not user or len(user) > 256 or not message_id or len(message_id) > 256:
             return None
-        if len(text) > 200:
+        if len(text) > (4096 if text.strip().removeprefix("/").startswith("MCP ") else 200):
             return None
         parts = text.strip().removeprefix("/").split()
         with self.connection() as db:
@@ -131,6 +145,11 @@ class GroupControl:
     def _command(self, db, user: str, selected: int | None, parts: list[str]) -> str:
         if not parts or parts in [["菜单"], ["帮助"], ["返回"]]:
             return MENU
+        if parts[0] == "MCP":
+            try:
+                return self._mcp_command(db, selected, parts[1:])
+            except (ValueError, sqlite3.Error):
+                return "MCP 配置未更新，请检查名称、地址、参数或服务器配置。"
         if parts[0] == "群列表":
             page = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 1
             page = max(1, min(page, 200))
@@ -203,6 +222,46 @@ class GroupControl:
         if not default and parts == ["状态"]:
             return self._status(row)
         return MENU
+
+    def _mcp_command(self, db, selected: int | None, parts: list[str]) -> str:
+        if parts == ["列表"]:
+            configs = self.mcp.configs()
+            return "MCP 列表\n" + (
+                "\n".join(
+                    f"{c.name}：{c.transport} {'启用' if c.enabled else '停用'}，"
+                    f"{len(c.groups)} 个授权群"
+                    for c in configs.values()
+                )
+                or "尚未添加。"
+            )
+        if len(parts) == 3 and parts[0] == "添加":
+            name, endpoint = parts[1:]
+            if endpoint.startswith("env:"):
+                config = ServerConfig(name=name, url_env=endpoint[4:])
+            else:
+                # Query credentials belong in server-side environment references.
+                if "?" in endpoint:
+                    return "带查询参数的地址请在服务器设置 MCP_ 专用变量，再使用 env:变量名添加。"
+                config = ServerConfig(name=name, url=endpoint)
+            self.mcp.put(config, create=True)
+            return f"已添加 MCP {name}，尚未授权任何群。发送：MCP 检查 {name}"
+        if len(parts) == 2 and parts[0] == "检查":
+            return MCPCheck(parts[1])
+        if len(parts) == 2 and parts[0] in {"授权", "撤销"}:
+            row = db.execute("SELECT group_id FROM groups WHERE id=?", (selected,)).fetchone()
+            if not row:
+                return "请先发送群列表，再选择需要管理的群。"
+            self.mcp.change(parts[1], "grant" if parts[0] == "授权" else "revoke", row[0])
+            return f"已{parts[0]}当前群使用 MCP {parts[1]}，后续调用生效。"
+        if len(parts) == 2 and parts[0] in {"启用", "停用", "删除"}:
+            self.mcp.change(
+                parts[1], "delete" if parts[0] == "删除" else "enabled", parts[0] == "启用"
+            )
+            return f"已{parts[0]} MCP {parts[1]}。"
+        if len(parts) == 3 and parts[0] == "限定":
+            self.mcp.change(parts[1], "tools", None if parts[2] == "*" else parts[2].split(","))
+            return f"已更新 MCP {parts[1]} 的工具范围，后续调用生效。"
+        return MCP_MENU
 
     def _status(self, row) -> str:
         self.policies.read()
