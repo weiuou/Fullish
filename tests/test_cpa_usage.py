@@ -16,7 +16,8 @@ from fullish.cpa_usage import (
     codex_windows,
     google_windows,
 )
-from fullish.cpa_usage_mcp import create_server
+from fullish.cpa_usage_mcp import auto_register, create_server, registration_config
+from fullish.mcp_servers import MCPStore, ServerConfig
 
 KEY = "private-management-key"
 EMAIL = "private-account@example.test"
@@ -268,3 +269,43 @@ def test_settings_read_private_file_without_repr_leak(tmp_path, monkeypatch):
     monkeypatch.setenv("CPA_BASE_URL", "http://remote.example")
     with pytest.raises(CPAUsageError, match="invalid_management_url"):
         CPAUsageSettings.from_env()
+
+
+def test_configured_builtin_registers_once_and_respects_later_deletion(tmp_path, monkeypatch):
+    store = MCPStore(tmp_path)
+    monkeypatch.delenv("MCP_CPA_BASE_URL", raising=False)
+    monkeypatch.delenv("MCP_CPA_MANAGEMENT_KEY_FILE", raising=False)
+    assert not auto_register(store) and not store.configs()
+    monkeypatch.setenv("MCP_CPA_BASE_URL", "http://localhost")
+    monkeypatch.setenv("MCP_CPA_MANAGEMENT_KEY_FILE", "/private/management.key")
+    assert auto_register(store)
+    config = store.configs()["cpa_usage"]
+    assert config.groups == [] and config.transport == "stdio"
+    store.change("cpa_usage", "grant", "a" * 32)
+    store.change("cpa_usage", "enabled", False)
+    assert not auto_register(MCPStore(tmp_path))
+    assert store.configs()["cpa_usage"].groups == ["a" * 32]
+    assert not store.configs()["cpa_usage"].enabled
+    store.change("cpa_usage", "delete")
+    assert not auto_register(MCPStore(tmp_path)) and not store.configs()
+
+
+def test_preexisting_registration_is_preserved_when_bootstrap_is_enabled(tmp_path, monkeypatch):
+    store = MCPStore(tmp_path)
+    config = ServerConfig(name="cpa_usage", url="https://operator.example/mcp", groups=["a" * 32])
+    store.put(config)
+    monkeypatch.setenv("MCP_CPA_BASE_URL", "http://localhost")
+    monkeypatch.setenv("MCP_CPA_MANAGEMENT_KEY_FILE", "/private/management.key")
+    assert not auto_register(store) and store.configs()["cpa_usage"] == config
+    store.change("cpa_usage", "delete")
+    assert not auto_register(MCPStore(tmp_path)) and not store.configs()
+
+
+def test_bootstrap_capacity_limit_can_recover_without_overwriting_servers(tmp_path):
+    store = MCPStore(tmp_path)
+    for index in range(8):
+        store.put(ServerConfig(name=f"server{index}", url="https://operator.example/mcp"))
+    assert not store.ensure_builtin(registration_config())
+    store.change("server0", "delete")
+    assert store.ensure_builtin(registration_config())
+    assert len(store.configs()) == 8

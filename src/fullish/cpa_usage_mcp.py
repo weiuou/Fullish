@@ -15,6 +15,7 @@ from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
 from fullish.cpa_usage import CPAUsage, CPAUsageError, CPAUsageSettings
+from fullish.mcp_servers import MCPStore, ServerConfig
 
 
 def create_server(
@@ -81,6 +82,29 @@ def create_server(
     return server
 
 
+def registration_config() -> ServerConfig:
+    environment = {
+        "CPA_BASE_URL": "MCP_CPA_BASE_URL",
+        "CPA_MANAGEMENT_KEY_FILE": "MCP_CPA_MANAGEMENT_KEY_FILE",
+    }
+    if os.environ.get("MCP_CPA_UNIX_SOCKET"):
+        environment["CPA_UNIX_SOCKET"] = "MCP_CPA_UNIX_SOCKET"
+    return ServerConfig(
+        name="cpa_usage",
+        transport="stdio",
+        command=sys.executable,
+        args=["-m", "fullish.cpa_usage_mcp"],
+        env=environment,
+        timeout=30,
+    )
+
+
+def auto_register(store: MCPStore) -> bool:
+    if not os.environ.get("MCP_CPA_BASE_URL") or not os.environ.get("MCP_CPA_MANAGEMENT_KEY_FILE"):
+        return False
+    return store.ensure_builtin(registration_config())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -90,26 +114,11 @@ def main():
     )
     args = parser.parse_args()
     if args.register:
-        from fullish.mcp_servers import MCPStore, ServerConfig
-
         directory = os.environ.get("GROUP_CONTROL_DIR")
         if not directory:
             raise SystemExit("GROUP_CONTROL_DIR is not configured")
-        environment = {
-            "CPA_BASE_URL": "MCP_CPA_BASE_URL",
-            "CPA_MANAGEMENT_KEY_FILE": "MCP_CPA_MANAGEMENT_KEY_FILE",
-        }
-        if os.environ.get("MCP_CPA_UNIX_SOCKET"):
-            environment["CPA_UNIX_SOCKET"] = "MCP_CPA_UNIX_SOCKET"
         MCPStore(Path(directory)).put(
-            ServerConfig(
-                name="cpa_usage",
-                transport="stdio",
-                command=sys.executable,
-                args=["-m", "fullish.cpa_usage_mcp"],
-                env=environment,
-                timeout=30,
-            ),
+            registration_config(),
             create=True,
         )
         print(

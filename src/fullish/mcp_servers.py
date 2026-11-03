@@ -98,6 +98,23 @@ class MCPStore:
         os.close(fd)
         with sqlite3.connect(self.path, timeout=3) as db:
             db.execute("CREATE TABLE IF NOT EXISTS servers(name TEXT PRIMARY KEY, config TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS bootstrapped(name TEXT PRIMARY KEY)")
+
+    def ensure_builtin(self, config: ServerConfig) -> bool:
+        """Bootstrap once; later restarts preserve explicit edits and deletion."""
+        with sqlite3.connect(self.path, timeout=3) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM bootstrapped WHERE name=?", (config.name,)).fetchone():
+                return False
+            exists = db.execute("SELECT 1 FROM servers WHERE name=?", (config.name,)).fetchone()
+            if not exists:
+                if db.execute("SELECT count(*) FROM servers").fetchone()[0] >= MAX_SERVERS:
+                    return False
+                db.execute(
+                    "INSERT INTO servers VALUES(?,?)", (config.name, config.model_dump_json())
+                )
+            db.execute("INSERT INTO bootstrapped VALUES(?)", (config.name,))
+            return not bool(exists)
 
     def configs(self) -> dict[str, ServerConfig]:
         try:
