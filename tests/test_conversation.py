@@ -8,32 +8,32 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from fullish.conversation import Conversations
-from fullish.model import ChatModel, ModelError
+from fullish.errors import ModelError
 from fullish.settings import ModelSettings
+from tests.helpers import close_reply_engine, make_conversation_service, make_reply_engine
 
 
 def test_group_context_deduplication_and_send_ack() -> None:
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
         reply = AsyncMock(return_value="可以试试")
         model.reply = reply
-        conversations = Conversations(model, allowed_groups=frozenset({"a"}))
+        conversations = make_conversation_service(model, allowed_groups=frozenset({"a"}))
         try:
             assert await conversations.receive("other", "0", "u", "Fullish", addressed=True) is None
-            assert not conversations.groups
+            assert not conversations.store.groups
             assert await conversations.receive("a", "1", "alice", "聊编程", addressed=False) is None
             assert await conversations.receive("a", "2", "bob", "Fullish 怎么看", addressed=False)
             turns = reply.call_args.args[0]
             assert turns[0]["sender_id"] == "alice" and turns[1]["sender_id"] == "bob"
             assert turns[0]["content"] == "聊编程" and turns[1]["content"] == "Fullish 怎么看"
-            assert all(t["role"] == "user" for t in conversations.groups["a"].turns)
-            conversations.sent("a", "可以试试")
-            assert conversations.groups["a"].turns[-1]["role"] == "assistant"
+            assert all(t["role"] == "user" for t in conversations.store.groups["a"].turns)
+            conversations.store.sent("a", "可以试试")
+            assert conversations.store.groups["a"].turns[-1]["role"] == "assistant"
             assert await conversations.receive("a", "2", "bob", "重复", addressed=True) is None
             assert reply.call_count == 1
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -48,10 +48,10 @@ def test_busy_group_waits_and_other_groups_are_isolated() -> None:
             await finish.wait()
             return "好"
 
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
         reply = AsyncMock(side_effect=respond)
         model.reply = reply
-        conversations = Conversations(model, min_interval=0)
+        conversations = make_conversation_service(model, min_interval=0)
         try:
             first = asyncio.create_task(conversations.receive("a", "1", "u", "hi", addressed=True))
             await started.wait()
@@ -67,20 +67,20 @@ def test_busy_group_waits_and_other_groups_are_isolated() -> None:
             assert reply.call_count == 2
             assert len(reply.call_args_list[0].args[0]) == 1
             assert reply.call_args.args[0][-1]["sender_id"] == "v"
-            assert conversations.active == 0
-            assert "w" not in str(conversations.groups["a"].turns)
+            assert conversations.generation.active == 0
+            assert "w" not in str(conversations.store.groups["a"].turns)
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
 
 def test_image_only_messages_join_context_and_reach_the_model() -> None:
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
         reply = AsyncMock(return_value="这图有点意思")
         model.reply = reply
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         try:
             # A sticker or picture without text is still worth remembering.
             assert (
@@ -97,19 +97,19 @@ def test_image_only_messages_join_context_and_reach_the_model() -> None:
             assert turns[1]["images"] == []
             # Messages without text are retained even without a mention or image.
             assert await conversations.receive("a", "3", "bob", "   ", addressed=False) is None
-            assert conversations.groups["a"].turns[-1]["content"] == "[无文字内容]"
+            assert conversations.store.groups["a"].turns[-1]["content"] == "[无文字内容]"
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
 
 def test_only_recent_images_are_forwarded_and_budget_is_trimmed() -> None:
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
         reply = AsyncMock(return_value="嗯")
         model.reply = reply
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         try:
             for index in range(7):
                 await conversations.receive(
@@ -120,7 +120,7 @@ def test_only_recent_images_are_forwarded_and_budget_is_trimmed() -> None:
                     addressed=False,
                     images=[f"http://cdn/{index}.jpg"],
                 )
-            group = conversations.groups["a"]
+            group = conversations.store.groups["a"]
             group.turns[-1]["created"] -= 151
             assert await conversations.receive("a", "7", "bob", "hi", addressed=True)
             history = reply.call_args.args[0]
@@ -132,13 +132,13 @@ def test_only_recent_images_are_forwarded_and_budget_is_trimmed() -> None:
             assert group.turns[0]["images"] == ["http://cdn/0.jpg"]
 
             for index in range(80):
-                conversations.sent("a", f"回复 {index} " + "字" * 190)
+                conversations.store.sent("a", f"回复 {index} " + "字" * 190)
             total = sum(len(item["content"]) for item in group.turns)
             assert len(group.turns) <= 60
             assert total <= 6000
             assert group.turns[-1]["content"].endswith("回复 79 " + "字" * 190)
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -157,13 +157,13 @@ def test_images_keep_their_senders_when_one_download_fails() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": "看到了"}}]})
 
     async def run() -> None:
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "fake-key"),
             transport=httpx.MockTransport(respond),
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(transport=httpx.MockTransport(media))
-        conversations = Conversations(model)
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(transport=httpx.MockTransport(media))
+        conversations = make_conversation_service(model)
         try:
             await conversations.receive(
                 "g",
@@ -198,7 +198,7 @@ def test_images_keep_their_senders_when_one_download_fails() -> None:
             assert envelope["sender"]["id"] == "carol"
             assert envelope["text"] == "Fullish，Alice 发的是哪张？"
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -226,15 +226,15 @@ def test_media_timeout_closes_stream_and_releases_conversation_capacity() -> Non
             posted.append(request)
             return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "fake-key", timeout=0.05),
             transport=httpx.MockTransport(respond),
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=stream))
         )
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         task = asyncio.create_task(
             conversations.receive(
                 "g", "1", "alice", "[图片]", addressed=True, images=["https://cdn.example/slow.png"]
@@ -242,13 +242,13 @@ def test_media_timeout_closes_stream_and_releases_conversation_capacity() -> Non
         )
         try:
             await asyncio.wait_for(started.wait(), timeout=1)
-            assert conversations.active == 1
-            assert conversations.groups["g"].lock.locked()
+            assert conversations.generation.active == 1
+            assert conversations.store.groups["g"].activity.lock.locked()
             with pytest.raises(ModelError, match="^connection_or_timeout$"):
                 await asyncio.wait_for(task, timeout=1)
             assert stream.closed
-            assert conversations.active == 0
-            assert not conversations.groups["g"].lock.locked()
+            assert conversations.generation.active == 0
+            assert not conversations.store.groups["g"].activity.lock.locked()
             assert not posted
             # A text request in another group can use the released capacity.
             assert (
@@ -257,25 +257,25 @@ def test_media_timeout_closes_stream_and_releases_conversation_capacity() -> Non
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
 
 def test_model_failure_releases_capacity() -> None:
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
         model.reply = AsyncMock(side_effect=ModelError("http_503"))
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         try:
             try:
                 await conversations.receive("a", "1", "u", "hi", addressed=True)
             except ModelError:
                 pass
-            assert conversations.active == 0
-            assert not conversations.groups["a"].lock.locked()
+            assert conversations.generation.active == 0
+            assert not conversations.store.groups["a"].activity.lock.locked()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -299,25 +299,25 @@ def test_global_capacity_waits_for_all_addressed_groups_instead_of_dropping():
             finally:
                 running -= 1
 
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
         model.reply = AsyncMock(side_effect=respond)
-        conversations = Conversations(model, min_interval=0)
+        conversations = make_conversation_service(model, min_interval=0)
         tasks = [
             asyncio.create_task(conversations.receive(str(i), "message", "u", "hi", addressed=True))
             for i in range(5)
         ]
         try:
             await asyncio.wait_for(started.wait(), 1)
-            assert conversations.active == 4
+            assert conversations.generation.active == 4
             assert model.reply.await_count == 4
             assert not tasks[4].done()
             release.set()
             assert await asyncio.gather(*tasks) == ["done"] * 5
-            assert maximum == 4 and conversations.active == 0
+            assert maximum == 4 and conversations.generation.active == 0
         finally:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())

@@ -1,10 +1,12 @@
 # 表达后处理与媒体发送
 
-`fullish.sending` 定义统一的回复候选，`sending/adapters` 分别适配文本、图片、语音与 QQ 表情，`sending.qq` 负责组装 QQ 消息。图片可以带文字在同一条 QQ 消息中发送；可选的表达后处理会在初稿完成后决定保留原稿、改写一条或组织成多条回复。
+`fullish.sending` 定义统一的回复候选，`sending/adapters` 分别适配文本、图片、语音与 QQ 表情，`sending.qq` 负责组装 QQ 消息与平台传输，`sending.service` 统一投递检查和逐条结果。聊天回复与部署简报共用群队列和投递服务。图片可以带文字在同一条 QQ 消息中发送；可选的表达后处理会在初稿完成后决定保留原稿、改写一条或组织成多条回复。
+
+公共投递只在平台确认后记录历史。部分失败停止后续消息；请求超时、连接中断或发送中取消可产生 `unknown`，不会自动重发。当前 `DeliveryResult` 与逐条回执只保存在内存，持久化 Outbox 随提醒功能另行实现。应用入口统一装配模型、工具、媒体与表达客户端，并在排空群队列后关闭资源。
 
 ## 构造回复
 
-模型或其他内容提供方可返回 `str | OutgoingMessage | None`：字符串是文字回复，`None` 表示不回复，`OutgoingMessage` 携带媒体。`Conversations` 的 `ReplyModel` 协议允许替换内容提供方。
+模型或其他内容提供方可返回 `str | OutgoingMessage | None`：字符串是文字回复，`None` 表示不回复，`OutgoingMessage` 携带媒体。`reply.schema.ReplyModel` 协议允许替换内容提供方；应用显式装配 `ReplyEngine`、会话服务与投递服务。
 
 ```python
 from pathlib import Path
@@ -26,11 +28,11 @@ local_picture = OutgoingMessage((Text("画好了"), Image(Path("/path/to/picture
 generated_picture = OutgoingMessage((Image(b"...actual image bytes..."),))
 ```
 
-在内容提供方的 `async reply(turns, *, addressed)` 中返回上述候选，继续经过现有的群白名单、去重和调用频率检查，再由群处理器发送。内容提供方不要直接调用 QQ API。`ChatModel` 已接入下述 GPT Image 生图工具；语音目前发送已有资源，尚未配置 TTS 服务。模型输出中的 Markdown 图片链接不会自动当成附件。
+在内容提供方的 `async reply(turns, *, addressed)` 中返回上述候选，继续经过现有的群白名单、去重和调用频率检查，再由公共投递服务发送。内容提供方不要直接调用 QQ API。`reply.engine.ReplyEngine` 已接入下述 GPT Image 生图工具；语音目前发送已有资源，尚未配置 TTS 服务。模型输出中的 Markdown 图片链接不会自动当成附件。
 
 ## 拟人化表达后处理
 
-`sending.postprocess.ReplyPostprocessor` 接在初版回答之后，用一次独立模型调用结合原稿、当前对话语境、明确配置的人设和可用素材决定表达形式。它可以保留原稿、适度口语化、加入 Unicode emoji，或组织少量短反应、主体说明和补充；拆成多条只是可选结果。没有按标点机械切分、固定三段、随机延迟或故意制造错字的逻辑。
+`reply.postprocess.ReplyPostprocessor` 接在初版回答之后，用一次独立模型调用结合原稿、当前对话语境、明确配置的人设和可用素材决定表达形式。它可以保留原稿、适度口语化、加入 Unicode emoji，或组织少量短反应、主体说明和补充；拆成多条只是可选结果。没有按标点机械切分、固定三段、随机延迟或故意制造错字的逻辑。
 
 配置 AI 后端后，后处理默认开启；显式设置 `AI_REPLY_POSTPROCESSING=false` 可关闭。不配置 AI 时仍可运行 foundation 模式。后处理复用 `AI_BASE_URL`、`AI_API_KEY`、`AI_UNIX_SOCKET`，可单独指定模型：
 
@@ -118,16 +120,16 @@ AI_IMAGE_TIMEOUT_SECONDS=120
 在配置已加载的运行容器内查看配置的图片模型（不生图，也不验证模型可用性）：
 
 ```sh
-sudo docker exec fullish-bot-1 python -m fullish.check_image
+sudo docker exec fullish-bot-1 python -m fullish.generation.check
 ```
 
 显式生成一张小测试图片，输出模型、字节数、格式和摘要（消耗生图额度，不向 QQ 发消息）：
 
 ```sh
-sudo docker exec fullish-bot-1 python -m fullish.check_image --generate
+sudo docker exec fullish-bot-1 python -m fullish.generation.check --generate
 # 可加 --output /tmp/fullish-image.png 保存结果供人工查看。
 # 用容器内已有参考图验证 CPA 图片编辑（会消耗一次图片额度，不向 QQ 发消息）。
-sudo docker exec fullish-bot-1 python -m fullish.check_image --generate --reference /tmp/reference.png --output /tmp/edited.png
+sudo docker exec fullish-bot-1 python -m fullish.generation.check --generate --reference /tmp/reference.png --output /tmp/edited.png
 ```
 
 最后在测试群请求一张图片，检查配文与图片同条到达。`/health/dependencies` 中的 `image_generation_enabled` 仅表示工具已配置，`image_model` 表示配置的图片模型，旧值 `auto` 等价于 `gpt-image-2.5`；健康检查不会调用生图接口。实际渠道模型是否可生成，仍需上述显式生图验收。
@@ -135,7 +137,7 @@ sudo docker exec fullish-bot-1 python -m fullish.check_image --generate --refere
 ## QQ 适配与边界
 
 - 图片和语音的来源支持 HTTP(S) URL、`bytes` 或 `pathlib.Path`。URL 必须能够由 QQ 平台获取；本地文件必须存在于运行机器或容器中。
-- `text.py`、`image.py`、`audio.py`、`qq_face.py` 分别编码消息段。`ADAPTERS` 按类型注册编码器，`build_message` / `prepare_replies` / `send_reply` 支持注入替代注册表，便于测试和替换实现。
+- `text.py`、`image.py`、`audio.py`、`qq_face.py` 分别编码消息段。`ADAPTERS` 按类型注册编码器，`build_message` / `prepare_replies` 支持注入替代注册表，便于测试和替换实现。
 - `prepare_replies` 在工作线程中组装整个计划、读取全部本地附件，全部完成后才开始投递。每条 `OutgoingMessage` 调用一次 `bot.send`；QQ 适配器先上传该条媒体（不自动发送），再用媒体句柄与文字调用一次群消息发送接口。各条使用同一入站消息 ID，回复序号由 NoneBot 的事件计数连续递增。
 - QQ 群发送底层一次只选取一个媒体附件，因此每条候选最多包含一张图片或一段语音；同条多附件和图音混合直接报错，避免静默丢失。空候选同样会被拒绝。
 - 语音文件需使用 QQ 接受的编码和格式；发送适配器不转码、不合成语音。上传限制、格式和平台权限以实际 QQ API 返回为准。

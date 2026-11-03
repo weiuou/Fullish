@@ -1,13 +1,13 @@
 # 私聊开发者菜单
 
-开发者可以私聊 Fullish，统一管理各群的聊天、搜索、生图、沙箱开关。保存后后续消息和工具调用读取新配置，不需要修改多份环境文件或重启。管理命令由程序直接处理，不调用模型。
+开发者可以私聊 Fullish，统一管理各群的聊天、搜索、生图、沙箱开关。保存后后续消息和工具调用读取新配置，不需要修改多份环境文件或重启。管理命令由程序直接处理，不调用模型。`management` 分离身份、存储、群设置与 MCP 命令，认证通过后才分发到功能处理器；`platforms.qq.menu` 只处理 QQ 私聊传输与限流，`management` 的模块入口提供运维 CLI，通过身份服务执行绑定、查询和撤销。
 
 ## 首次绑定
 
 服务器维护者生成一个十分钟有效、只能使用一次的绑定码：
 
 ```sh
-sudo docker exec fullish-bot-1 python -m fullish.control pair
+sudo docker exec fullish-bot-1 python -m fullish.management pair
 ```
 
 把输出的 `绑定开发者 …` 私聊发给机器人。成功后，该私聊的平台用户身份即成为开发者；显示名、群管理员身份和聊天正文中的身份声明不授予权限。群内发送绑定命令不能绑定。绑定码不会写入数据库或日志，数据库只保存摘要与有效期。
@@ -42,13 +42,13 @@ Compose 设置 `GROUP_CONTROL_DIR=/var/lib/fullish/control`，挂载主机 `/var
 
 首次启用导入已有 `QQ_ALLOWED_GROUPS`、`TOOLS_ALLOWED_GROUPS` 和当前图片开关，保留现有权限。此后菜单配置优先，环境变量不再覆盖开关；未开启动态管理的旧部署继续按原来的白名单工作。策略缺失或损坏时不授予群功能；已有开发者数据库但策略丢失时拒绝启动，避免重新导入旧权限。
 
-已有部署升级须先运行新版本 `scripts/server-setup.sh` 安装挂载，并安装新的 `sandbox_server.py`、同目录的 `group_policy.py`，在 broker 环境设置 `GROUP_POLICY_PATH=/var/lib/fullish-control/policy.json`。策略文件须先从现有权限初始化，再重启 broker；通常通过新版 `scripts/sandbox-setup.sh` 完成。正常镜像升级和回滚保留管理目录，不自动删除开发者身份或设置。
+已有部署升级须先运行新版本 `scripts/server-setup.sh` 安装挂载，并使用 `scripts/sandbox-setup.sh` 将 `sandbox/server.py`、`sandbox/files.py` 与 `policies/groups.py` 安装为独立服务文件，在 broker 环境设置 `GROUP_POLICY_PATH=/var/lib/fullish-control/policy.json`。策略文件须先从现有权限初始化，再重启 broker；通常通过新版 `scripts/sandbox-setup.sh` 完成。正常镜像升级和回滚保留管理目录，不自动删除开发者身份或设置。
 
 服务器侧查看已绑定身份摘要或撤销某位开发者：
 
 ```sh
-sudo docker exec fullish-bot-1 python -m fullish.control developers
-sudo docker exec fullish-bot-1 python -m fullish.control revoke --user-ref 身份摘要
+sudo docker exec fullish-bot-1 python -m fullish.management developers
+sudo docker exec fullish-bot-1 python -m fullish.management revoke --user-ref 身份摘要
 ```
 
 重新生成绑定码会使旧码失效。不要把绑定码发到群里；任何持有码并在有效期内完成绑定的私聊用户都会获得全部群的管理权限。

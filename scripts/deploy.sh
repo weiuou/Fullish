@@ -90,18 +90,29 @@ if [[ -n ${FULLISH_QQ_CONFIG_FILE:-} ]]; then
     helper=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime_config.py
     python3 "$helper" update "$root/runtime.env" < "$FULLISH_QQ_CONFIG_FILE"
 fi
+# Select the reviewed package entry, or the original entry in an older rollback image.
+# No application aliases are installed; only the host deployment boundary handles old images.
+module_runner='import importlib.util,runpy,sys
+modern,legacy=sys.argv[1:3]
+try:
+    spec=importlib.util.find_spec(modern)
+except ModuleNotFoundError:
+    spec=None
+target=modern if spec is not None else legacy
+sys.argv=[target,*sys.argv[3:]]
+runpy.run_module(target,run_name="__main__")'
 # An enabled sandbox must work through the candidate's actual Compose mounts
 # before the healthy sender is stopped. This runs no model or QQ requests.
 sandbox_enabled() { grep -Eq '^SANDBOX_(SOCKET|TOKEN)=.+' "$root/runtime.env"; }
 if sandbox_enabled; then
-    timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -m fullish.sandbox_check
+    timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -c "$module_runner" fullish.sandbox.check fullish.sandbox_check
 fi
 wallet_enabled() {
     # An explicit rollback may target an image from before wallet support existed.
     (( rollback_mode == 0 )) && grep -Eiq '^WALLET_ENABLED=true[[:space:]]*$' "$root/runtime.env"
 }
 if wallet_enabled; then
-    timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -m fullish.wallet_check
+    timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -c "$module_runner" fullish.wallet.check fullish.wallet_check
 fi
 apply_started=1
 # Single active sender: stop old application before starting its replacement.
@@ -112,10 +123,10 @@ container=$("${compose[@]}" ps --quiet bot)
 [[ $(docker inspect --format '{{.State.Health.Status}}' "$container") == healthy ]] || die 'Application did not pass its healthcheck.'
 [[ $(docker inspect --format '{{.Config.Image}}' "$container") == "$target" ]] || die 'Running image does not match the requested digest.'
 if sandbox_enabled; then
-    timeout 90 docker exec "$container" python -m fullish.sandbox_check
+    timeout 90 docker exec "$container" python -c "$module_runner" fullish.sandbox.check fullish.sandbox_check
 fi
 if wallet_enabled; then
-    timeout 90 docker exec "$container" python -m fullish.wallet_check
+    timeout 90 docker exec "$container" python -c "$module_runner" fullish.wallet.check fullish.wallet_check
 fi
 
 if [[ $current != "$target" ]]; then previous=$current; fi
@@ -142,7 +153,7 @@ report_previous=''
 if [[ $report_revision =~ ^[a-f0-9]{40}$ ]] && [[ -z $report_previous || $report_previous =~ ^[a-f0-9]{40}$ ]]; then
     report_args=(--previous "$report_previous" --current "$report_revision")
     (( rollback_mode == 0 )) || report_args+=(--rollback)
-    if ! timeout 320 docker exec "$container" python -m fullish.release_report "${report_args[@]}"; then
+    if ! timeout 320 docker exec "$container" python -c "$module_runner" fullish.notifications.report fullish.release_report "${report_args[@]}"; then
         printf 'WARNING: deployment succeeded, but the QQ deployment report failed.\n' >&2
     fi
 else

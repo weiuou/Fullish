@@ -14,19 +14,24 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 from nonebot.adapters.qq import Bot
-from test_sending import event
 
-from fullish.conversation import Conversations
+from fullish.errors import ModelError
 from fullish.generation import GeneratedImage
 from fullish.generation.openai import OpenAIImageGenerator
-from fullish.image_assets import ImageAssetError, ImageAssets
-from fullish.model import ChatModel, ModelError
-from fullish.qq import handle_group
+from fullish.media.assets import ImageAssetError, ImageAssets
+from fullish.platforms.qq.adapter import handle_group
 from fullish.sending import Image, OutgoingMessage
 from fullish.settings import ImageGenerationSettings, ModelSettings, ToolSettings
-from fullish.tools import ToolContext, ToolRuntime
 from fullish.tools.images import PublicImages, image_candidates
+from fullish.tools.runtime import ToolContext, ToolRuntime
 from fullish.tools.web import ToolError
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_reply_engine,
+)
+from tests.test_sending import event
 
 GROUP = "g" * 32
 CONTEXT = ToolContext(GROUP, "u", "incoming")
@@ -164,7 +169,7 @@ def test_search_to_reference_edit_delivers_actual_qq_attachment(
                 200, json={"data": [{"b64_json": base64.b64encode(GENERATED).decode()}]}
             )
 
-        from fullish.tool_audit import ToolAudit
+        from fullish.tools.audit import ToolAudit
 
         runtime = ToolRuntime(
             ToolSettings(frozenset({GROUP}), "search-key"),
@@ -176,7 +181,7 @@ def test_search_to_reference_edit_delivers_actual_qq_attachment(
         generator = OpenAIImageGenerator(
             connection, ImageGenerationSettings(), transport=httpx.MockTransport(edit)
         )
-        model = ChatModel(
+        model = make_reply_engine(
             connection,
             transport=httpx.MockTransport(chat),
             tools=runtime,
@@ -195,7 +200,11 @@ def test_search_to_reference_edit_delivers_actual_qq_attachment(
             patch.object(Bot, "post_group_messages", new=AsyncMock()) as post,
         ):
             try:
-                await handle_group(Conversations(model), object.__new__(Bot), incoming)
+                await handle_group(
+                    make_chat_handler(make_conversation_service(model)),
+                    object.__new__(Bot),
+                    incoming,
+                )
                 upload.assert_awaited_once_with(
                     group_openid=GROUP, srv_send_msg=False, file_type=1, file_data=GENERATED
                 )
@@ -205,7 +214,7 @@ def test_search_to_reference_edit_delivers_actual_qq_attachment(
                 audit = (tmp_path / "audit.db").read_bytes()
                 assert PNG not in audit and b"data:image" not in audit
             finally:
-                await model.close()
+                await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -224,13 +233,13 @@ def test_incoming_image_is_forwarded_to_generator_with_reference_id():
         generator = Mock(
             generate=AsyncMock(return_value=GeneratedImage(GENERATED)), close=AsyncMock()
         )
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(chat),
             image_generator=generator,
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, content=PNG))
         )
         try:
@@ -241,7 +250,7 @@ def test_incoming_image_is_forwarded_to_generator_with_reference_id():
             assert result == OutgoingMessage((Image(GENERATED),))
             generator.generate.assert_awaited_once_with("改成开心表情", reference_images=(PNG,))
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -367,7 +376,7 @@ def test_image_assets_are_reply_local_bounded_and_do_not_expose_bytes(monkeypatc
     assert first.add(PNG) is asset
     with pytest.raises(ImageAssetError, match="image_reference_not_found"):
         other.get(asset.image_id)
-    monkeypatch.setattr("fullish.image_assets.MAX_SESSION_IMAGES", 1)
+    monkeypatch.setattr("fullish.media.assets.MAX_SESSION_IMAGES", 1)
     with pytest.raises(ImageAssetError, match="image_session_limit"):
         first.add(GENERATED)
 
@@ -432,7 +441,7 @@ def test_public_reads_cannot_create_false_visual_assets(public_dns, monkeypatch,
 def test_unknown_reference_never_reaches_paid_generator():
     async def run():
         generator = Mock(generate=AsyncMock(), close=AsyncMock())
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             image_generator=generator,
             transport=httpx.MockTransport(
@@ -451,7 +460,7 @@ def test_unknown_reference_never_reaches_paid_generator():
                 await model.reply([], addressed=True)
             generator.generate.assert_not_awaited()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 

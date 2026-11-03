@@ -13,12 +13,14 @@ from nonebot.adapters.qq.event import GroupAtMessageCreateEvent
 from nonebot.adapters.qq.exception import ActionFailed
 from nonebot.drivers import Response
 
-from fullish.conversation import Conversations
-from fullish.model import ChatModel
-from fullish.qq import handle_group
+from fullish.platforms.qq.adapter import handle_group
+from fullish.policies.access import AccessPolicy
+from fullish.reply.engine import ReplyEngine
 from fullish.sending import Audio, Image, OutgoingMessage, Text
 from fullish.sending.adapters import ADAPTERS
-from fullish.sending.qq import build_message, send_reply
+from fullish.sending.qq import QQTransport, build_message
+from fullish.sending.service import DeliveryRequest, SendingService
+from tests.helpers import make_chat_handler, make_conversation_service
 
 
 def event():
@@ -129,7 +131,11 @@ def test_real_qq_sender_uploads_then_sends_one_message(part_type, file_type, wit
             patch.object(Bot, "post_group_files", new=AsyncMock(side_effect=upload)),
             patch.object(Bot, "post_group_messages", new=AsyncMock(side_effect=send)) as post,
         ):
-            await send_reply(bot, incoming, reply)
+            result = await SendingService(AccessPolicy()).deliver(
+                DeliveryRequest(incoming.group_openid, reply),
+                QQTransport(bot, incoming.group_openid, event=incoming),
+            )
+            assert result.confirmed
             post.assert_awaited_once()
         assert calls == ["upload", "send"]
 
@@ -148,7 +154,14 @@ def test_media_bytes_reach_qq_upload(part_type, file_type):
             ) as upload,
             patch.object(Bot, "post_group_messages", new=AsyncMock()) as post,
         ):
-            await send_reply(bot, event(), OutgoingMessage((part_type(b"media-bytes"),)))
+            incoming = event()
+            result = await SendingService(AccessPolicy()).deliver(
+                DeliveryRequest(
+                    incoming.group_openid, OutgoingMessage((part_type(b"media-bytes"),))
+                ),
+                QQTransport(bot, incoming.group_openid, event=incoming),
+            )
+            assert result.confirmed
             upload.assert_awaited_once_with(
                 group_openid="g", srv_send_msg=False, file_type=file_type, file_data=b"media-bytes"
             )
@@ -167,7 +180,7 @@ def test_candidate_flows_through_handler_and_records_only_accepted_media(case, p
             if record := message.record["extra"].get("flow"):
                 records.append(record)
 
-        model = Mock(spec=ChatModel)
+        model = Mock(spec=ReplyEngine)
         source = (
             Path("missing-private-media-file")
             if case == "missing_file"
@@ -175,7 +188,7 @@ def test_candidate_flows_through_handler_and_records_only_accepted_media(case, p
         )
         reply = OutgoingMessage((Text("说明文字"), part_type(source)))
         model.reply = AsyncMock(return_value=reply)
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         failure = ActionFailed(Response(403, content=json.dumps({"code": 112233})))
         upload = AsyncMock(return_value=SimpleNamespace(file_info="handle"))
         post = AsyncMock()
@@ -189,8 +202,8 @@ def test_candidate_flows_through_handler_and_records_only_accepted_media(case, p
                 patch.object(Bot, "post_group_files", new=upload),
                 patch.object(Bot, "post_group_messages", new=post),
             ):
-                await handle_group(conversations, object.__new__(Bot), event())
-            history = conversations.groups["g"].turns
+                await handle_group(make_chat_handler(conversations), object.__new__(Bot), event())
+            history = conversations.store.groups["g"].turns
             if case == "success":
                 assert history[-1]["role"] == "assistant"
                 assert history[-1]["content"] == "说明文字" + marker
@@ -219,16 +232,16 @@ def test_cancelled_send_propagates_without_recording_reply():
             started.set()
             await asyncio.Event().wait()
 
-        model = Mock(spec=ChatModel)
+        model = Mock(spec=ReplyEngine)
         model.reply = AsyncMock(return_value=OutgoingMessage((Audio(b"voice"),)))
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         bot = Mock(spec=Bot)
         bot.send = AsyncMock(side_effect=send)
-        task = asyncio.create_task(handle_group(conversations, bot, event()))
+        task = asyncio.create_task(handle_group(make_chat_handler(conversations), bot, event()))
         await started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert all(turn["role"] == "user" for turn in conversations.groups["g"].turns)
+        assert all(turn["role"] == "user" for turn in conversations.store.groups["g"].turns)
 
     asyncio.run(run())

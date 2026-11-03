@@ -70,9 +70,9 @@ Compose 将数据库保存在独立的 `fullish_tool-audit` 卷中，路径为 `
 在服务器上，先从日志找到目标消息的 `trace_id`，再查询其搜索与读取结果：
 
 ```sh
-sudo docker exec fullish-bot-1 python -m fullish.tool_audit --trace-id 填入trace_id
+sudo docker exec fullish-bot-1 python -m fullish.tools.audit --trace-id 填入trace_id
 # 只查看其中一次调用；也可不带过滤参数查看最近 20 条。
-sudo docker exec fullish-bot-1 python -m fullish.tool_audit --audit-id 填入audit_id
+sudo docker exec fullish-bot-1 python -m fullish.tools.audit --audit-id 填入audit_id
 ```
 
 命令按时间顺序输出 JSON 行，`snapshot.request` 是查询，`snapshot.response` 是工具交给模型的结果。可用 `--limit 1..100` 限制条数，`--path` 查看指定数据库；查询以只读方式打开，不会创建不存在的数据库。这个入口仅供服务器维护者使用，没有对外 HTTP 接口。
@@ -148,7 +148,7 @@ sudo python3 scripts/sandbox-smoke.py
 
 验收只运行合成命令，不向 QQ 发消息。检查计算、文件复用、凭证缺失、只读文件系统、断网、超时、后台清理和输出截断。broker 同时验证宿主机实际限额。
 
-5. 通过正常 CI/CD 部署机器人。候选镜像会先通过真实 Compose 挂载执行 `python -m fullish.sandbox_check`，成功才停止旧机器人；新机器人启动后再次验收，成功才记录版本和发送正常部署汇报。任一次失败都会使发布失败，启动后失败还会回滚。沙箱关闭时不要求它可用，不会发模型请求或测试群消息。
+5. 通过正常 CI/CD 部署机器人。候选镜像会先通过真实 Compose 挂载执行 `python -m fullish.sandbox.check`，成功才停止旧机器人；新机器人启动后再次验收，成功才记录版本和发送正常部署汇报。任一次失败都会使发布失败，启动后失败还会回滚。沙箱关闭时不要求它可用，不会发模型请求或测试群消息。
 
 ## CI 与发布门禁
 
@@ -160,7 +160,7 @@ sudo python3 scripts/sandbox-smoke.py
 
 升级 worker 时以专用用户重建镜像，在 `/etc/fullish-sandbox.env` 更新固定镜像 ID，重启 `fullish-sandbox.service`；会重新创建不匹配的容器，群工作区随之清空。修改 broker 源码后重新安装服务文件；安装器保留已有配置，不会擅自替换镜像。
 
-从纯文本沙箱升级到图片传输时，必须重建包含 `sandbox_files.py` 的 worker 镜像，并使用新镜像的固定 ID 重跑 `scripts/sandbox-setup.sh <群OpenID> <新镜像ID>`，安装新版 broker 和辅助文件。安装器会更新指定镜像，保留已有 token 等配置；旧容器重建后工作区清空。`sandbox-smoke.py` 验证大于文本输出限制的文件往返和符号链接拒绝。新应用的 `sandbox_check` 发布门禁会执行合成文件往返并删除探针；旧 broker / worker 无法通过门禁，只更新 bot 镜像不会被当作升级成功。
+从纯文本沙箱升级到图片传输时，必须重建包含 `sandbox_files.py` 的 worker 镜像，并使用新镜像的固定 ID 重跑 `scripts/sandbox-setup.sh <群OpenID> <新镜像ID>`，安装新版 broker 和辅助文件。源码分别位于 `sandbox/server.py`、`sandbox/files.py` 与 `policies/groups.py`；安装后的独立文件名和 systemd 入口不变。安装器会更新指定镜像，保留已有 token 等配置；旧容器重建后工作区清空。`sandbox-smoke.py` 验证大于文本输出限制的文件往返和符号链接拒绝。新应用的 `sandbox.check` 发布门禁会执行合成文件往返并删除探针；旧 broker / worker 无法通过门禁，只更新 bot 镜像不会被当作升级成功。
 
 停用机器人沙箱工具时清空 `/opt/fullish/runtime.env` 的 `SANDBOX_SOCKET` 和 `SANDBOX_TOKEN` 后正常部署。停 broker 不会自动销毁已常驻的任务容器；完全回收时，以专用用户仅删除名称以 `fullish-sandbox-` 开头、经核对属于本功能的容器，再停专用 rootless daemon。不要操作生产 daemon。
 

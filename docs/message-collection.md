@@ -1,8 +1,8 @@
 # 群消息采集与解析
 
-消息链路：QQ 官方事件 → `collection.qq` → 分类型解析器 → `CollectedMessage` → `Conversations` → 模型。
+消息链路：QQ 官方事件 → `collection.qq` → 分类型解析器 → `CollectedMessage` → `reply.service.ConversationService` → 上下文快照与回复执行。
 
-`collection` 负责把已经收到的事件转换为统一记录，不调用模型、不下载媒体、不决定是否发言。群白名单、去重、上下文裁剪和发言频率仍由 `Conversations` 管理；私聊继续在 QQ 事件入口丢弃。普通群消息能否到达，仍取决于平台权限和实际事件，见 [接入指南](qq-setup.md)。
+`collection` 负责把已经收到的事件转换为统一记录，不调用模型、不下载媒体、不决定是否发言。`policies.access` 解释群权限，`conversation.store` 管理去重、上下文裁剪和快照，`scheduling` 管理冷却与并发。开发者私聊在 QQ 入口路由到独立菜单，其他私聊不进入群上下文或聊天模型。普通群消息能否到达，仍取决于平台权限和实际事件，见 [接入指南](qq-setup.md)。
 
 ## 模块边界
 
@@ -11,10 +11,13 @@
 | [collection/schema.py](../src/fullish/collection/schema.py) | 平台无关的发送者、内容片段、引用消息和群消息结构 |
 | [collection/qq.py](../src/fullish/collection/qq.py) | 从 QQ 事件提取群、消息 ID、发送者、时间、引用及片段元数据 |
 | [collection/parsers](../src/fullish/collection/parsers/__init__.py) | 按片段类型选择独立解析器，保留片段顺序 |
-| [conversation.py](../src/fullish/conversation.py) | 有界的内存上下文和现有回复策略 |
-| [model.py](../src/fullish/model.py) | 模型输入封装，以及现有的图片下载与多模态请求 |
+| [image/segments.py](../src/fullish/collection/parsers/image/segments.py) | 从图片消息片段提取占位和附件元数据 |
+| [image/formats.py](../src/fullish/collection/parsers/image/formats.py) / [image/gif.py](../src/fullish/collection/parsers/image/gif.py) | 图片格式识别、GIF 帧解码、时序采样与有界预览 |
+| [conversation/store.py](../src/fullish/conversation/store.py) | 有界内存上下文、去重、裁剪与多模态快照 |
+| [reply/service.py](../src/fullish/reply/service.py) | 现有触发策略与回复执行的业务入口 |
+| [reply/input.py](../src/fullish/reply/input.py) / [reply/media.py](../src/fullish/reply/media.py) | 模型输入封装与触发生成时的有界图片读取 |
 
-`Conversations.receive_message()` 接受统一记录；`receive()` 保留为纯文本回放的便捷入口，走相同的身份封装和上下文处理。
+`ConversationService.receive_message()` 接受统一记录；纯文本 `receive()` 也走同一个身份封装和上下文处理流程。群状态从 `ConversationStore` 读取，执行并发从 `GenerationCoordinator` 读取，业务入口不再转发这两类内部属性。
 
 ## 解析器的当前能力
 
@@ -22,7 +25,7 @@
 | --- | --- | --- |
 | 文字 `text.py` | 正文 | 按需增加文字预处理 |
 | 表情 `emoji.py` | `[表情]` 和平台表情 ID | 表情含义映射 |
-| 图片 `image.py` | `[图片]`、URL 及平台提供的文件信息 | 图像解释、OCR 等；现有按需视觉输入继续工作 |
+| 图片 `image/` | 入口提取 `[图片]`、URL 与文件信息；按需解析图片字节格式和 GIF 帧 | 图像解释、OCR 等 |
 | @ `mention.py` | 显示名、目标 ID；事件提供时另存成员 OpenID；支持全体成员 | 进一步解析称呼和对话对象 |
 | 语音 `audio.py` | `[语音]` 和附件元数据 | 语音转写 |
 | 视频 `video.py` | `[视频]` 和附件元数据 | 抽帧、音轨和视频理解 |
@@ -32,6 +35,8 @@
 附件元数据在平台提供时保留 URL、文件名、MIME 类型和大小，图片还保留宽高。缺少 URL 的附件也保留占位。未支持片段不照单保存任意原始字段。
 
 片段顺序沿用适配器输出；只有事件元数据、没有原始位置的全体成员 @ 和缺 URL 附件补在末尾，不推断它们在正文中的位置。
+
+图像分两步解析：入口的 `image.segments` 只读取事件字段，不下载附件；触发回复、网页图片工具或编辑操作获取字节后，再调用 `image.formats` 与 `image.gif`。GIF 解码、帧数/像素/字节限制和时间线采样只有一份实现，不随每条普通群消息执行。`media.assets` 管理本轮素材 ID 和容量，`generation.references` 调用解析器准备编辑参考；两者不自行实现另一套 GIF 解码。
 
 片段的 `status` 表示当前处理程度：`parsed` 为文字或 @ 等结构已解析，`pending` 为媒体或表情仍待解释，`unsupported` 为尚未注册解析器。`pending` 不表示后台已经排队，也不代表会自动下载或处理。
 

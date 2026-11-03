@@ -9,11 +9,15 @@ import pytest
 from nonebot.adapters.qq import Bot
 from nonebot.adapters.qq.event import GroupAtMessageCreateEvent
 
-from fullish.conversation import Conversations
-from fullish.model import ChatModel
-from fullish.qq import handle_group
-from fullish.sending.postprocess import ReplyPostprocessor
+from fullish.platforms.qq.adapter import handle_group
+from fullish.reply.postprocess import ReplyPostprocessor
 from fullish.settings import ModelSettings, ReplyPostprocessSettings
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_reply_engine,
+)
 
 
 @pytest.mark.parametrize("expression_fails", [False, True])
@@ -46,13 +50,13 @@ def test_draft_to_expression_to_acknowledged_qq_messages(expression_fails):
             return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
         backend = ModelSettings("http://localhost/v1", "fake-key", model="draft-model")
-        model = ChatModel(backend, transport=httpx.MockTransport(respond))
+        model = make_reply_engine(backend, transport=httpx.MockTransport(respond))
         processor = ReplyPostprocessor(
             backend,
             ReplyPostprocessSettings(model="expression-model"),
             transport=httpx.MockTransport(respond),
         )
-        conversations = Conversations(model, postprocessor=processor)
+        conversations = make_conversation_service(model, postprocessor=processor)
         event = GroupAtMessageCreateEvent.model_validate(
             {
                 "id": "incoming",
@@ -70,7 +74,7 @@ def test_draft_to_expression_to_acknowledged_qq_messages(expression_fails):
         )
         try:
             with patch.object(Bot, "post_group_messages", new=AsyncMock()) as post:
-                await handle_group(conversations, object.__new__(Bot), event)
+                await handle_group(make_chat_handler(conversations), object.__new__(Bot), event)
             expected = (
                 ["终于成功了，先歇会儿吧。"] if expression_fails else ["终于过了！🎉", "先歇会儿吧"]
             )
@@ -81,12 +85,12 @@ def test_draft_to_expression_to_acknowledged_qq_messages(expression_fails):
             assert all(call.kwargs["msg_id"] == "incoming" for call in post.await_args_list)
             assert [
                 turn["content"]
-                for turn in conversations.groups["g"].turns
+                for turn in conversations.store.groups["g"].turns
                 if turn["role"] == "assistant"
             ] == expected
             assert calls == ["draft-model", "expression-model"]
         finally:
-            await model.close()
+            await close_reply_engine(model)
             await processor.close()
 
     asyncio.run(run())

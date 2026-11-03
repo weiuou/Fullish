@@ -31,8 +31,10 @@ MCP_CPA_MANAGEMENT_KEY_FILE=/var/lib/fullish/control/cpa-management.key
 如需手动注册或恢复已删除的注册，可执行：
 
 ```sh
-docker exec fullish-bot-1 python -m fullish.cpa_usage_mcp --register
+docker exec fullish-bot-1 python -m fullish.integrations.cpa.server --register
 ```
+
+目录迁移前已有的内置 stdio 注册在读取时使用当前 `fullish.integrations.cpa.server` 入口，数据库中的旧入口、启停状态、群授权和工具范围均不自动改写。自定义 HTTP server 不受影响；旧镜像回滚仍可读取原注册。新建注册使用新入口，若回滚到旧镜像，需按旧版文档恢复对应入口参数。
 
 自动注册和手动注册都不授予任何群，手动命令不覆盖已有同名配置。随后在已绑定的开发者私聊中执行：
 
@@ -45,7 +47,7 @@ MCP 授权 cpa_usage
 
 之后群里可以问“看看 AI 订阅还有多少额度”“Codex 的周额度什么时候重置”。模型使用工具名称 `mcp_cpa_usage__cpa_subscription_quota`；输出只包含查询结果，不提供管理入口。
 
-也可把内置模块交给其他受信任的 MCP host，以当前 Python 执行 `-m fullish.cpa_usage_mcp`，并向子进程传入 `CPA_BASE_URL`、`CPA_UNIX_SOCKET`、`CPA_MANAGEMENT_KEY_FILE`；独立远程 CPA 使用 HTTPS，可省略 Unix socket。支持用 `CPA_MANAGEMENT_KEY` 从私密环境提供管理密钥，但部署优先使用文件。
+也可把内置模块交给其他受信任的 MCP host，以当前 Python 执行 `-m fullish.integrations.cpa.server`，并向子进程传入 `CPA_BASE_URL`、`CPA_UNIX_SOCKET`、`CPA_MANAGEMENT_KEY_FILE`；独立远程 CPA 使用 HTTPS，可省略 Unix socket。支持用 `CPA_MANAGEMENT_KEY` 从私密环境提供管理密钥，但部署优先使用文件。
 
 ## 查询边界
 

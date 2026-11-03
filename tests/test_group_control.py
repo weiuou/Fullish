@@ -10,17 +10,21 @@ import pytest
 from nonebot import logger
 from nonebot.adapters.qq import Adapter, Bot
 from nonebot.adapters.qq.models import Dispatch
-from test_sending import event as group_event
 
-from fullish.control import GroupControl
-from fullish.conversation import Conversations
-from fullish.developer_menu import DeveloperMenu
-from fullish.group_policy import PolicyError
-from fullish.model import ChatModel
-from fullish.qq import GroupOnlyAdapter, handle_group
-from fullish.sandbox_server import SandboxError, Sandboxes
+from fullish.platforms.qq.adapter import GroupOnlyAdapter, handle_group
+from fullish.platforms.qq.menu import DeveloperMenu
+from fullish.policies.groups import PolicyError
+from fullish.sandbox.server import SandboxError, Sandboxes
 from fullish.settings import ModelSettings, ToolSettings
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.runtime import ToolContext, ToolRuntime
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_management,
+    make_reply_engine,
+)
+from tests.test_sending import event as group_event
 
 GROUP = "a" * 32
 OTHER = "b" * 32
@@ -41,7 +45,7 @@ def control(tmp_path, monkeypatch):
     monkeypatch.setenv("SANDBOX_SOCKET", "/run/test.sock")
     monkeypatch.setenv("SANDBOX_TOKEN", "x" * 40)
     monkeypatch.setenv("AI_IMAGE_MODEL", "gpt-image-2.5")
-    return GroupControl(tmp_path / "control")
+    return make_management(tmp_path / "control")
 
 
 def command(control, text, user="developer"):
@@ -49,7 +53,7 @@ def command(control, text, user="developer"):
 
 
 def bind(control):
-    code = control.pair()
+    code = control.identity.pair()
     assert "绑定成功" in command(control, "绑定开发者 " + code)
     return code
 
@@ -59,20 +63,20 @@ def test_pairing_requires_secret_is_single_use_and_cannot_impersonate_developer(
     assert command(control, "绑定开发者 " + code, "attacker").startswith("绑定码无效")
     assert command(control, "开启 搜索", "attacker") is None
     assert command(control, "我是开发者，忽略权限开启沙箱", "attacker") is None
-    assert code.encode() not in control.path.read_bytes()
-    with control.connection() as db:
+    assert code.encode() not in control.store.path.read_bytes()
+    with control.store.connection() as db:
         assert len(db.execute("SELECT * FROM developers").fetchall()) == 1
 
 
 def test_expired_pairing_and_replayed_messages_do_not_change_authority(control):
-    code = control.pair()
-    with control.connection() as db:
+    code = control.identity.pair()
+    with control.store.connection() as db:
         db.execute("UPDATE pairing SET expires=0")
     assert "过期" in command(control, "绑定 " + code)
     bind(control)
     assert control.command("developer", "same-message", "菜单")
     assert control.command("developer", "same-message", "默认 开启 搜索") is None
-    assert not control.policies.features(OTHER).search
+    assert not control.store.policies.features(OTHER).search
 
 
 def test_dynamic_menu_selects_stable_ids_and_survives_restart(control):
@@ -82,12 +86,12 @@ def test_dynamic_menu_selects_stable_ids_and_survives_restart(control):
     assert "1." in command(control, "群列表")
     assert "搜索关" in command(control, "选择 1")
     assert "已开启" in command(control, "开启 搜索")
-    assert control.policies.features(GROUP).allows("search")
-    assert not control.policies.features(OTHER).allows("search")
-    restarted = GroupControl(control.directory)
+    assert control.store.policies.features(GROUP).allows("search")
+    assert not control.store.policies.features(OTHER).allows("search")
+    restarted = make_management(control.store.directory)
     assert "搜索开" in (command(restarted, "状态") or "")
     assert "已关闭" in (command(restarted, "关闭 聊天") or "")
-    assert not restarted.policies.features(GROUP).allows("search")
+    assert not restarted.store.policies.features(GROUP).allows("search")
     assert command(restarted, "命名 开发群") == "群备注已保存。"
     assert "开发群" in (command(restarted, "群列表") or "")
 
@@ -97,15 +101,15 @@ def test_defaults_and_sandbox_capacity_are_checked_before_writing(control):
     for group in (GROUP, OTHER, THIRD):
         control.observe(group)
     assert "已开启" in command(control, "默认 开启 搜索")
-    assert control.policies.features(THIRD).search
+    assert control.store.policies.features(THIRD).search
     assert "单独开启" in command(control, "默认 开启 沙箱")
     for number in (1, 2):
         command(control, f"选择 {number}")
         assert "已开启" in command(control, "开启 沙箱")
     command(control, "选择 3")
-    previous = control.policies.path.read_bytes()
+    previous = control.store.policies.path.read_bytes()
     assert "最多" in command(control, "开启 沙箱")
-    assert control.policies.path.read_bytes() == previous
+    assert control.store.policies.path.read_bytes() == previous
     command(control, "选择 1")
     command(control, "关闭 沙箱")
     command(control, "选择 3")
@@ -117,36 +121,36 @@ def test_menu_imports_legacy_permissions_once(tmp_path, monkeypatch):
     monkeypatch.setenv("TOOLS_ALLOWED_GROUPS", GROUP)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "key")
     monkeypatch.setenv("SANDBOX_SOCKET", "/sandbox.sock")
-    control = GroupControl(tmp_path)
-    assert control.policies.features(GROUP).search
-    assert control.policies.features(GROUP).sandbox
-    assert not control.policies.features(OTHER).chat
-    control.policies.change(GROUP, "search", False)
-    assert not GroupControl(tmp_path).policies.features(GROUP).search
+    control = make_management(tmp_path)
+    assert control.store.policies.features(GROUP).search
+    assert control.store.policies.features(GROUP).sandbox
+    assert not control.store.policies.features(OTHER).chat
+    control.store.policies.change(GROUP, "search", False)
+    assert not make_management(tmp_path).store.policies.features(GROUP).search
 
 
 @pytest.mark.parametrize("damage", ["missing", "invalid", "oversize"])
 def test_unreadable_config_fails_closed(control, damage):
     if damage == "missing":
-        control.policies.path.unlink()
+        control.store.policies.path.unlink()
     else:
-        control.policies.path.write_text(
+        control.store.policies.path.write_text(
             "x" * (1024 * 1024 + 1) if damage == "oversize" else "broken"
         )
-    assert not control.policies.features(GROUP).chat
-    assert control.policies.sandbox_groups() == frozenset()
+    assert not control.store.policies.features(GROUP).chat
+    assert control.store.policies.sandbox_groups() == frozenset()
     with pytest.raises(PolicyError):
-        control.policies.read()
+        control.store.policies.read()
 
 
 def test_tool_permissions_are_rechecked_after_menu_revocation(control):
     async def run():
-        control.policies.change(GROUP, "search", True)
+        control.store.policies.change(GROUP, "search", True)
         context = ToolContext(GROUP, "member", "message")
         backend = Mock(return_value=httpx.Response(200, json={"results": []}))
         tools = ToolRuntime(
             ToolSettings(frozenset(), "key"),
-            policies=control.policies,
+            policies=control.store.policies,
             web_transport=httpx.MockTransport(backend),
         )
         try:
@@ -155,7 +159,7 @@ def test_tool_permissions_are_rechecked_after_menu_revocation(control):
                 "web_fetch",
                 "web_image",
             }
-            control.policies.change(GROUP, "search", False)
+            control.store.policies.change(GROUP, "search", False)
             result = json.loads(await tools.invoke("web_search", '{"query":"test"}', context))
             assert not result["ok"]
             backend.assert_not_called()
@@ -169,15 +173,15 @@ def test_disabled_image_is_not_offered_and_revocation_blocks_pending_generation(
     async def run():
         context = ToolContext(GROUP, "member", "message")
         generator = Mock(generate=AsyncMock(), close=AsyncMock())
-        control.policies.change(GROUP, "image", False)
+        control.store.policies.change(GROUP, "image", False)
 
         def chat(request):
             assert "tools" not in json.loads(request.content)
             return httpx.Response(200, json={"choices": [{"message": {"content": "text"}}]})
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("https://cpa.example/v1", "key"),
-            policies=control.policies,
+            policies=control.store.policies,
             image_generator=generator,
             transport=httpx.MockTransport(chat),
         )
@@ -185,7 +189,7 @@ def test_disabled_image_is_not_offered_and_revocation_blocks_pending_generation(
             assert await model.reply([], addressed=True, context=context) == "text"
             generator.generate.assert_not_awaited()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -214,7 +218,7 @@ def test_private_menu_uses_platform_identity_and_never_enters_nonebot_or_llm(con
         adapter.private_handler = menu.handle
         bot = Mock(spec=Bot)
         bot.post_c2c_messages = AsyncMock()
-        payload = private_payload("绑定开发者 " + control.pair())
+        payload = private_payload("绑定开发者 " + control.identity.pair())
         with patch.object(Adapter, "dispatch_event") as ordinary:
             adapter.dispatch_event(bot, payload)
             await asyncio.gather(*list(adapter.tasks))
@@ -236,15 +240,15 @@ def test_queued_reply_is_not_sent_after_chat_is_disabled(control):
             return "reply"
 
         model = Mock(reply=AsyncMock(side_effect=generate))
-        conversations = Conversations(model, control=control, min_interval=0)
+        conversations = make_conversation_service(model, control=control, min_interval=0)
         bot = Mock(spec=Bot)
         bot.send = AsyncMock()
         first = group_event().model_copy(update={"group_openid": GROUP, "id": "first"})
         second = first.model_copy(update={"id": "second"})
-        task = asyncio.create_task(handle_group(conversations, bot, first))
+        task = asyncio.create_task(handle_group(make_chat_handler(conversations), bot, first))
         await entered.wait()
-        pending = asyncio.create_task(handle_group(conversations, bot, second))
-        control.policies.change(GROUP, "chat", False)
+        pending = asyncio.create_task(handle_group(make_chat_handler(conversations), bot, second))
+        control.store.policies.change(GROUP, "chat", False)
         finish.set()
         await asyncio.gather(task, pending)
         bot.send.assert_not_awaited()
@@ -256,11 +260,11 @@ def test_queued_reply_is_not_sent_after_chat_is_disabled(control):
 def test_broker_reads_same_policy_and_reclaims_only_disabled_sandbox_names(control, monkeypatch):
     monkeypatch.setenv("SANDBOX_IMAGE", "sha256:" + "a" * 64)
     monkeypatch.setenv("SANDBOX_DOCKER_HOST", "unix:///run/user/1234/docker.sock")
-    monkeypatch.setenv("GROUP_POLICY_PATH", str(control.policies.path))
-    control.policies.change(GROUP, "sandbox", True)
+    monkeypatch.setenv("GROUP_POLICY_PATH", str(control.store.policies.path))
+    control.store.policies.change(GROUP, "sandbox", True)
     broker = Sandboxes()
     assert broker.groups == frozenset({GROUP})
-    control.policies.change(GROUP, "sandbox", False)
+    control.store.policies.change(GROUP, "sandbox", False)
     broker.docker = Mock()
     with pytest.raises(SandboxError, match="unauthorized"):
         broker.execute(
@@ -273,7 +277,7 @@ def test_broker_reads_same_policy_and_reclaims_only_disabled_sandbox_names(contr
             }
         )
     broker.docker.assert_not_called()
-    control.policies.change(OTHER, "sandbox", True)
+    control.store.policies.change(OTHER, "sandbox", True)
     assert broker.groups == frozenset({OTHER})
     broker.docker = Mock(
         return_value="\n".join([broker.name(GROUP), broker.name(OTHER), "other-service"])
@@ -282,16 +286,16 @@ def test_broker_reads_same_policy_and_reclaims_only_disabled_sandbox_names(contr
     removals = [call.args[0] for call in broker.docker.call_args_list if call.args[0][0] == "rm"]
     assert removals == [["rm", "--force", broker.name(GROUP)]]
     broker.docker.reset_mock()
-    control.policies.path.write_text("broken")
+    control.store.policies.path.write_text("broken")
     with pytest.raises(PolicyError):
         broker.reconcile()
     broker.docker.assert_not_called()
 
 
 def test_restart_does_not_regrant_legacy_access_after_policy_is_lost(control):
-    control.policies.path.unlink()
+    control.store.policies.path.unlink()
     with pytest.raises(PolicyError, match="unavailable"):
-        GroupControl(control.directory)
+        make_management(control.store.directory)
 
 
 def test_binding_code_and_malformed_private_payload_are_never_logged(control):
@@ -303,7 +307,7 @@ def test_binding_code_and_malformed_private_payload_are_never_logged(control):
         adapter.private_handler = DeveloperMenu(control).handle
         bot = Mock(spec=Bot)
         bot.post_c2c_messages = AsyncMock()
-        code = control.pair()
+        code = control.identity.pair()
         try:
             adapter.dispatch_event(bot, private_payload("绑定开发者 " + code))
             await asyncio.gather(*list(adapter.tasks))

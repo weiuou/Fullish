@@ -11,18 +11,22 @@ import pytest
 from nonebot.adapters.qq.bot import _check_at_me, _check_reply
 from nonebot.adapters.qq.models import Dispatch
 from PIL import Image
-from test_reference_images import GENERATED, multipart, tool
-from test_replies import bot_mock, quoted_event
 
-from fullish.animated_images import GifError, gif_preview
-from fullish.conversation import Conversations
+from fullish.collection.parsers.image.gif import GifError, gif_preview
 from fullish.errors import ModelError
 from fullish.generation.openai import OpenAIImageGenerator
 from fullish.generation.references import prepare_reference_images
-from fullish.image_assets import ImageAssetError, ImageAssets
-from fullish.model import ChatModel
-from fullish.qq import GroupOnlyAdapter, handle_group
+from fullish.media.assets import ImageAssetError, ImageAssets
+from fullish.platforms.qq.adapter import GroupOnlyAdapter, handle_group
 from fullish.settings import ImageGenerationSettings, ModelSettings
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_reply_engine,
+)
+from tests.test_reference_images import GENERATED, multipart, tool
+from tests.test_replies import bot_mock, quoted_event
 
 
 def gif(*, animated=False):
@@ -107,7 +111,7 @@ def test_long_held_frame_does_not_hide_the_rest_of_the_timeline():
 
 @pytest.mark.parametrize("limit", ["MAX_GIF_FRAMES", "MAX_DECODE_PIXELS"])
 def test_animation_decoder_stops_at_resource_limits(monkeypatch, limit):
-    monkeypatch.setattr("fullish.animated_images." + limit, 1)
+    monkeypatch.setattr("fullish.collection.parsers.image.gif." + limit, 1)
     with pytest.raises(GifError, match="gif_decode_limit"):
         gif_preview(gif(animated=True))
 
@@ -127,7 +131,7 @@ def test_animation_preview_counts_toward_reply_memory_limit(monkeypatch):
     original = gif(animated=True)
     preview = gif_preview(original)
     monkeypatch.setattr(
-        "fullish.image_assets.MAX_SESSION_BYTES", len(original) + len(preview.image) - 1
+        "fullish.media.assets.MAX_SESSION_BYTES", len(original) + len(preview.image) - 1
     )
     assets = ImageAssets()
     with pytest.raises(ImageAssetError, match="image_session_limit"):
@@ -151,11 +155,11 @@ def test_animation_is_visible_across_its_timeline_when_image_generation_is_disab
                 200, json={"choices": [{"message": {"content": "红色变成蓝色。"}}]}
             )
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"), transport=httpx.MockTransport(chat)
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, content=original))
         )
         try:
@@ -167,7 +171,7 @@ def test_animation_is_visible_across_its_timeline_when_image_generation_is_disab
                 == "红色变成蓝色。"
             )
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -278,14 +282,14 @@ def test_quoted_gif_reaches_static_edit_endpoint_and_unified_qq_sender(animated)
         generator = OpenAIImageGenerator(
             connection, ImageGenerationSettings(), transport=httpx.MockTransport(edit)
         )
-        model = ChatModel(
+        model = make_reply_engine(
             connection, transport=httpx.MockTransport(chat), image_generator=generator
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, content=original))
         )
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         adapter = object.__new__(GroupOnlyAdapter)
         adapter.tasks = set()
         bot = bot_mock()
@@ -293,7 +297,7 @@ def test_quoted_gif_reaches_static_edit_endpoint_and_unified_qq_sender(animated)
         async def handle(incoming):
             await _check_reply(bot, incoming)
             _check_at_me(bot, incoming)
-            await handle_group(conversations, bot, incoming)
+            await handle_group(make_chat_handler(conversations), bot, incoming)
 
         bot.handle_event = AsyncMock(side_effect=handle)
         incoming = quoted_event(
@@ -312,6 +316,6 @@ def test_quoted_gif_reaches_static_edit_endpoint_and_unified_qq_sender(animated)
             assert message[1].data["content"] == GENERATED
             assert requests == ["/v1/images/edits"]
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())

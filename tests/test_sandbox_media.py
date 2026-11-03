@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
+from fullish.errors import ModelError
 from fullish.generation import GeneratedImage
-from fullish.image_assets import ImageAssets
-from fullish.model import ChatModel, ModelError
+from fullish.media.assets import ImageAssets
 from fullish.sending import Image, OutgoingMessage, Text
 from fullish.settings import ModelSettings, ToolSettings
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.runtime import ToolContext, ToolRuntime
+from tests.helpers import close_reply_engine, make_reply_engine
 
 GROUP = "g" * 32
 CONTEXT = ToolContext(GROUP, "member", "message")
@@ -133,7 +134,7 @@ def test_sandbox_result_is_viewed_before_send_or_reference_edit(finish):
             )
 
         generator = Mock(generate=AsyncMock(return_value=GeneratedImage(EDITED)), close=AsyncMock())
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(chat),
             tools=tools(backend),
@@ -151,7 +152,7 @@ def test_sandbox_result_is_viewed_before_send_or_reference_edit(finish):
                     "保留主体，做表情包", reference_images=(PNG,)
                 )
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -208,7 +209,7 @@ def test_image_ids_from_previous_reply_cannot_be_sent():
                 },
             )
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(chat),
             tools=tools(lambda _: httpx.Response(500)),
@@ -217,6 +218,6 @@ def test_image_ids_from_previous_reply_cannot_be_sent():
             with pytest.raises(ModelError, match="^image_reference_not_found$"):
                 await model.reply([], addressed=True, context=CONTEXT)
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())

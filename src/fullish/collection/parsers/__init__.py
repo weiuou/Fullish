@@ -2,14 +2,15 @@
 
 from collections.abc import Iterable, Mapping
 
-from fullish.collection.parsers import audio, emoji, file, image, mention, text, video
+from fullish.collection.parsers import audio, emoji, file, mention, text, video
 from fullish.collection.parsers.base import SegmentParser
+from fullish.collection.parsers.image import segments
 from fullish.collection.schema import MessagePart, ParsedContent
 
 PARSERS: dict[str, SegmentParser] = {
     "text": text.parse,
     "emoji": emoji.parse,
-    "image": image.parse,
+    "image": segments.parse,
     "mention_user": mention.parse,
     "group_mention_user": mention.parse,
     "mention_everyone": mention.parse_everyone,

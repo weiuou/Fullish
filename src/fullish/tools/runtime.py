@@ -17,17 +17,18 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from fullish.group_policy import GroupPolicies
-from fullish.image_assets import MAX_ASSET_BYTES, ImageAssetError, ImageAssets
+from fullish.media.assets import MAX_ASSET_BYTES, ImageAssetError, ImageAssets
+from fullish.policies.access import AccessPolicy
+from fullish.policies.groups import GroupPolicies
 from fullish.settings import ToolSettings
 from fullish.telemetry import elapsed_ms, emit, reference, trace_id
-from fullish.tool_audit import ToolAudit
+from fullish.tools.audit import ToolAudit
 from fullish.tools.images import PublicImages
 from fullish.tools.web import DeepSeekWeb, ToolError
 
 if TYPE_CHECKING:
-    from fullish.mcp_client import WalletMCPClient
-    from fullish.mcp_runtime import MCPRegistry
+    from fullish.mcp.runtime import MCPRegistry
+    from fullish.wallet.client import WalletMCPClient
 
 
 @dataclass(frozen=True)
@@ -157,11 +158,14 @@ class ToolRuntime:
         policies: GroupPolicies | None = None,
         wallet: "WalletMCPClient | None" = None,
         mcp: "MCPRegistry | None" = None,
+        owns_integrations: bool = True,
     ):
         self.settings = settings
         self.policies = policies
+        self.access = AccessPolicy(policies=policies)
         self.wallet = wallet
         self.mcp = mcp
+        self.owns_integrations = owns_integrations
         self.audit = (
             audit
             if audit is not None
@@ -196,9 +200,9 @@ class ToolRuntime:
         self.images = PublicImages(transport=image_transport)
 
     async def close(self) -> None:
-        if self.mcp:
+        if self.mcp and self.owns_integrations:
             await self.mcp.close()
-        if self.wallet:
+        if self.wallet and self.owns_integrations:
             await self.wallet.close()
         await self.images.close()
         if self.web:
@@ -207,25 +211,16 @@ class ToolRuntime:
             await self.sandbox.aclose()
 
     def base_allowed(self, context: ToolContext | None) -> bool:
-        return bool(
-            context
-            and (
-                self.policies.features(context.group_id).chat
-                if self.policies and context
-                else context.group_id in self.settings.allowed_groups
-            )
-            and context.sender_id
-            and context.message_id
+        return self.access.interaction_allowed(
+            context, legacy=bool(context and context.group_id in self.settings.allowed_groups)
         )
 
     def wallet_allowed(self, context: ToolContext | None) -> bool:
         return bool(
             self.wallet
             and context
-            and context.sender_id
-            and context.message_id
+            and self.access.interaction_allowed(context)
             and self.wallet.settings.allows_group(context.group_id)
-            and (not self.policies or self.policies.features(context.group_id).chat)
         )
 
     def allowed(self, context: ToolContext | None) -> bool:
@@ -237,9 +232,7 @@ class ToolRuntime:
         return bool(
             self.mcp
             and context
-            and context.sender_id
-            and context.message_id
-            and (not self.policies or self.policies.features(context.group_id).chat)
+            and self.access.interaction_allowed(context)
             and self.mcp.allowed(context.group_id)
         )
 

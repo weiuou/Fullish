@@ -12,11 +12,11 @@ from nonebot.adapters.qq.event import GroupAtMessageCreateEvent
 from nonebot.adapters.qq.exception import ActionFailed
 from nonebot.drivers import Response
 
-from fullish.control import GroupControl
-from fullish.conversation import Conversations
-from fullish.qq import handle_group
+from fullish.platforms.qq.adapter import handle_group
+from fullish.reply.service import ConversationService
 from fullish.sending.qq import prepare_replies
 from fullish.sending.schema import Image, OutgoingMessage, ReplyPlan, Text
+from tests.helpers import make_chat_handler, make_conversation_service, make_management
 
 
 def event():
@@ -36,9 +36,11 @@ def text(value: str) -> OutgoingMessage:
     return OutgoingMessage((Text(value),))
 
 
-def history(conversations: Conversations) -> list[str]:
+def history(conversations: ConversationService) -> list[str]:
     return [
-        item["content"] for item in conversations.groups["g"].turns if item["role"] == "assistant"
+        item["content"]
+        for item in conversations.store.groups["g"].turns
+        if item["role"] == "assistant"
     ]
 
 
@@ -66,7 +68,7 @@ def test_plan_uses_actual_qq_sequences_and_records_each_acknowledged_message(flo
                 text("先歇会儿吧"),
             )
         )
-        conversations = Conversations(Mock(reply=AsyncMock(return_value=plan)))
+        conversations = make_conversation_service(Mock(reply=AsyncMock(return_value=plan)))
         incoming = event()
         incoming._reply_seq = 2
         sent = []
@@ -84,7 +86,7 @@ def test_plan_uses_actual_qq_sequences_and_records_each_acknowledged_message(flo
             ) as upload,
             patch.object(Bot, "post_group_messages", new=AsyncMock(side_effect=post)),
         ):
-            await handle_group(conversations, object.__new__(Bot), incoming)
+            await handle_group(make_chat_handler(conversations), object.__new__(Bot), incoming)
         assert [item["msg_seq"] for item in sent] == [3, 4, 5]
         assert [item["msg_id"] for item in sent] == ["incoming"] * 3
         assert [item["msg_type"] for item in sent] == [0, 7, 0]
@@ -105,7 +107,7 @@ def test_plan_uses_actual_qq_sequences_and_records_each_acknowledged_message(flo
 def test_failure_stops_remainder_and_keeps_only_accepted_history(flow, failure_stage):
     async def run():
         plan = ReplyPlan((text("收到"), OutgoingMessage((Image(b"picture"),)), text("补充")))
-        conversations = Conversations(Mock(reply=AsyncMock(return_value=plan)))
+        conversations = make_conversation_service(Mock(reply=AsyncMock(return_value=plan)))
         failure = ActionFailed(Response(403, content=json.dumps({"code": 112233})))
         upload = AsyncMock(return_value=SimpleNamespace(file_info="media"))
         post = AsyncMock()
@@ -118,7 +120,7 @@ def test_failure_stops_remainder_and_keeps_only_accepted_history(flow, failure_s
             patch.object(Bot, "post_group_files", new=upload),
             patch.object(Bot, "post_group_messages", new=post),
         ):
-            await handle_group(conversations, object.__new__(Bot), incoming)
+            await handle_group(make_chat_handler(conversations), object.__new__(Bot), incoming)
         assert history(conversations) == ["收到"]
         assert post.await_count == (1 if failure_stage == "upload" else 2)
         assert incoming._reply_seq == 2
@@ -133,7 +135,7 @@ def test_failure_stops_remainder_and_keeps_only_accepted_history(flow, failure_s
 def test_cancellation_propagates_after_preserving_earlier_acknowledgement(flow):
     async def run():
         plan = ReplyPlan((text("第一条"), text("第二条"), text("第三条")))
-        conversations = Conversations(Mock(reply=AsyncMock(return_value=plan)))
+        conversations = make_conversation_service(Mock(reply=AsyncMock(return_value=plan)))
         pending = asyncio.Event()
 
         async def post(**kwargs):
@@ -142,7 +144,9 @@ def test_cancellation_propagates_after_preserving_earlier_acknowledgement(flow):
                 await asyncio.Event().wait()
 
         with patch.object(Bot, "post_group_messages", new=AsyncMock(side_effect=post)) as send:
-            task = asyncio.create_task(handle_group(conversations, object.__new__(Bot), event()))
+            task = asyncio.create_task(
+                handle_group(make_chat_handler(conversations), object.__new__(Bot), event())
+            )
             await pending.wait()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -159,20 +163,22 @@ def test_cancellation_propagates_after_preserving_earlier_acknowledgement(flow):
 @pytest.mark.parametrize("feature", ["chat", "image"])
 def test_permission_revocation_blocks_entire_remainder_including_text(tmp_path, flow, feature):
     async def run():
-        control = GroupControl(tmp_path)
-        control.policies.change(None, "chat", True)
-        control.policies.change(None, "image", True)
+        control = make_management(tmp_path)
+        control.store.policies.change(None, "chat", True)
+        control.store.policies.change(None, "image", True)
         plan = ReplyPlan((text("收到"), text("这张图给你"), OutgoingMessage((Image(b"picture"),))))
-        conversations = Conversations(Mock(reply=AsyncMock(return_value=plan)), control=control)
+        conversations = make_conversation_service(
+            Mock(reply=AsyncMock(return_value=plan)), control=control
+        )
 
         async def post(**kwargs):
-            control.policies.change(None, feature, False)
+            control.store.policies.change(None, feature, False)
 
         with (
             patch.object(Bot, "post_group_messages", new=AsyncMock(side_effect=post)) as send,
             patch.object(Bot, "post_group_files", new=AsyncMock()) as upload,
         ):
-            await handle_group(conversations, object.__new__(Bot), event())
+            await handle_group(make_chat_handler(conversations), object.__new__(Bot), event())
         send.assert_awaited_once()
         upload.assert_not_awaited()
         assert history(conversations) == ["收到"]
@@ -184,21 +190,23 @@ def test_permission_revocation_blocks_entire_remainder_including_text(tmp_path, 
 
 def test_permission_is_checked_again_after_preparing_local_files(tmp_path, flow):
     async def run():
-        control = GroupControl(tmp_path)
-        control.policies.change(None, "chat", True)
-        control.policies.change(None, "image", True)
+        control = make_management(tmp_path)
+        control.store.policies.change(None, "chat", True)
+        control.store.policies.change(None, "image", True)
         plan = ReplyPlan((text("图在这里"), OutgoingMessage((Image(b"picture"),))))
-        conversations = Conversations(Mock(reply=AsyncMock(return_value=plan)), control=control)
+        conversations = make_conversation_service(
+            Mock(reply=AsyncMock(return_value=plan)), control=control
+        )
 
         async def prepare(reply):
             messages = await prepare_replies(reply)
-            control.policies.change(None, "image", False)
+            control.store.policies.change(None, "image", False)
             return messages
 
         bot = Mock(spec=Bot)
         bot.send = AsyncMock()
-        with patch("fullish.qq.prepare_replies", side_effect=prepare):
-            await handle_group(conversations, bot, event())
+        with patch("fullish.sending.qq.prepare_replies", side_effect=prepare):
+            await handle_group(make_chat_handler(conversations), bot, event())
         bot.send.assert_not_awaited()
         assert history(conversations) == []
         assert flow[-1]["outcome"] == "no_reply"
@@ -211,12 +219,12 @@ def test_missing_later_file_prevents_earlier_text_delivery(tmp_path, flow):
         plan = ReplyPlan(
             (text("这张图给你"), OutgoingMessage((Image(tmp_path / "missing-private.png"),)))
         )
-        conversations = Conversations(Mock(reply=AsyncMock(return_value=plan)))
+        conversations = make_conversation_service(Mock(reply=AsyncMock(return_value=plan)))
         with (
             patch.object(Bot, "post_group_messages", new=AsyncMock()) as send,
             patch.object(Bot, "post_group_files", new=AsyncMock()) as upload,
         ):
-            await handle_group(conversations, object.__new__(Bot), event())
+            await handle_group(make_chat_handler(conversations), object.__new__(Bot), event())
         send.assert_not_awaited()
         upload.assert_not_awaited()
         assert history(conversations) == []
@@ -231,11 +239,11 @@ def test_missing_later_file_prevents_earlier_text_delivery(tmp_path, flow):
 def test_insufficient_event_budget_does_not_truncate_plan(flow, previous_attempts):
     async def run():
         plan = ReplyPlan((text("前半句"), text("后半句")))
-        conversations = Conversations(Mock(reply=AsyncMock(return_value=plan)))
+        conversations = make_conversation_service(Mock(reply=AsyncMock(return_value=plan)))
         incoming = event()
         incoming._reply_seq = previous_attempts
         with patch.object(Bot, "post_group_messages", new=AsyncMock()) as send:
-            await handle_group(conversations, object.__new__(Bot), incoming)
+            await handle_group(make_chat_handler(conversations), object.__new__(Bot), incoming)
         send.assert_not_awaited()
         assert incoming._reply_seq == previous_attempts
         assert history(conversations) == []

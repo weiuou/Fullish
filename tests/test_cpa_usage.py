@@ -7,7 +7,7 @@ import httpx
 import pytest
 from mcp import Client
 
-from fullish.cpa_usage import (
+from fullish.integrations.cpa.client import (
     CPAUsage,
     CPAUsageError,
     CPAUsageSettings,
@@ -16,8 +16,8 @@ from fullish.cpa_usage import (
     codex_windows,
     google_windows,
 )
-from fullish.cpa_usage_mcp import auto_register, create_server, registration_config
-from fullish.mcp_servers import MCPStore, ServerConfig
+from fullish.integrations.cpa.server import auto_register, create_server, registration_config
+from fullish.mcp.store import MCPStore, ServerConfig
 
 KEY = "private-management-key"
 EMAIL = "private-account@example.test"
@@ -309,3 +309,52 @@ def test_bootstrap_capacity_limit_can_recover_without_overwriting_servers(tmp_pa
     store.change("server0", "delete")
     assert store.ensure_builtin(registration_config())
     assert len(store.configs()) == 8
+
+
+def test_saved_builtin_entry_discovers_after_layout_change_without_rewriting_grants(
+    tmp_path, monkeypatch
+):
+    import sqlite3
+    from contextlib import closing
+
+    from fullish.mcp.runtime import MCPRegistry
+
+    group = "g" * 32
+    credential = tmp_path / "synthetic-management.key"
+    credential.write_text(KEY, encoding="utf-8")
+    credential.chmod(0o600)
+    monkeypatch.setenv("MCP_CPA_BASE_URL", "http://localhost")
+    monkeypatch.setenv("MCP_CPA_MANAGEMENT_KEY_FILE", str(credential))
+    monkeypatch.delenv("MCP_CPA_UNIX_SOCKET", raising=False)
+    store = MCPStore(tmp_path)
+    saved = registration_config().model_copy(
+        update={
+            "args": ["-m", "fullish.cpa_usage_mcp"],
+            "groups": [group],
+            "tools": ["cpa_subscriptions"],
+        }
+    )
+    store.put(saved)
+
+    def raw_registration():
+        with closing(sqlite3.connect(store.path)) as db:
+            return db.execute("SELECT config FROM servers WHERE name='cpa_usage'").fetchone()[0]
+
+    before = raw_registration()
+
+    async def run():
+        registry = MCPRegistry(store)
+        try:
+            await registry.prepare(group)
+            assert [schema["function"]["name"] for schema in registry.schemas(group)] == [
+                "mcp_cpa_usage__cpa_subscriptions"
+            ]
+            assert registry.schemas("other" * 8) == []
+            assert raw_registration() == before
+            store.change("cpa_usage", "revoke", group)
+            assert not registry.allowed(group) and not registry.schemas(group)
+            assert json.loads(raw_registration())["args"] == saved.args
+        finally:
+            await registry.close()
+
+    asyncio.run(asyncio.wait_for(run(), 20))

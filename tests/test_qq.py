@@ -9,7 +9,7 @@ from nonebot.adapters.qq import Adapter, Bot, Message, MessageSegment
 from nonebot.adapters.qq.models import Dispatch
 
 from fullish.collection.qq import describe
-from fullish.qq import GroupOnlyAdapter
+from fullish.platforms.qq.adapter import GroupOnlyAdapter
 
 
 def test_private_dispatch_is_discarded() -> None:
@@ -51,7 +51,7 @@ import httpx
 import nonebot
 from fastapi.testclient import TestClient
 from fullish.app import create_app
-from fullish.qq import GroupOnlyAdapter
+from fullish.platforms.qq.adapter import GroupOnlyAdapter
 os.environ.pop('AI_REPLY_POSTPROCESSING', None)
 with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
     app = create_app()
@@ -59,7 +59,7 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
     assert adapter.private_handler is not None
     assert adapter.qq_config.qq_bots[0].intent.to_int() == 1 << 25
     assert adapter.qq_config.qq_bots[0].use_websocket
-    app.state.model.client = httpx.AsyncClient(
+    app.state.model.provider.client = httpx.AsyncClient(
         base_url='http://localhost/v1/',
         transport=httpx.MockTransport(lambda _: httpx.Response(
             200, json={'data': [{'id': 'gemini-3.8-flash-high'}]})))
@@ -76,7 +76,7 @@ with patch.object(GroupOnlyAdapter, 'startup', new_callable=AsyncMock):
         assert result['reply_postprocessing_enabled'] is True
         assert result['reply_postprocessing_model'] == 'expression-test-model'
         assert client.get('/version').json()['mode'] == 'qq'
-    assert app.state.model.client.is_closed
+    assert app.state.model.provider.client.is_closed
     assert app.state.model.image_generator.client.is_closed
     assert app.state.reply_postprocessor.client.is_closed
 """

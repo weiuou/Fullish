@@ -16,11 +16,11 @@ import httpx
 import pytest
 from nonebot import logger
 
-from fullish.model import ChatModel
 from fullish.settings import ModelSettings, ToolSettings
 from fullish.telemetry import message_trace, reference, trace_id
-from fullish.tool_audit import MAX_SNAPSHOT_BYTES, ToolAudit
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.audit import MAX_SNAPSHOT_BYTES, ToolAudit
+from fullish.tools.runtime import ToolContext, ToolRuntime
+from tests.helpers import close_reply_engine, make_reply_engine
 
 GROUP = "g" * 32
 CONTEXT = ToolContext(GROUP, "member-private", "message-private")
@@ -99,7 +99,7 @@ def test_model_search_then_fetch_records_exact_evidence_and_call_order(tmp_path,
             "getaddrinfo",
             AsyncMock(return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]),
         )
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("https://chat.example/v1", "model-secret"),
             transport=httpx.MockTransport(chat),
             tools=tools(path, web),
@@ -116,7 +116,7 @@ def test_model_search_then_fetch_records_exact_evidence_and_call_order(tmp_path,
                     == "找到项目了"
                 )
         finally:
-            await model.close()
+            await close_reply_engine(model)
         # A fresh reader represents a replacement bot container on the same volume.
         rows = list(reversed(ToolAudit(path).read(trace_id=expected_trace)))
         assert [row["tool"] for row in rows] == ["web_search", "web_fetch"]
@@ -302,7 +302,7 @@ def test_inspection_cli_filters_without_creating_missing_store(tmp_path):
         [
             sys.executable,
             "-m",
-            "fullish.tool_audit",
+            "fullish.tools.audit",
             "--path",
             str(path),
             "--trace-id",
@@ -315,7 +315,7 @@ def test_inspection_cli_filters_without_creating_missing_store(tmp_path):
     assert json.loads(result.stdout)["audit_id"] == "one"
     missing = tmp_path / "missing.sqlite3"
     result = subprocess.run(
-        [sys.executable, "-m", "fullish.tool_audit", "--path", str(missing)],
+        [sys.executable, "-m", "fullish.tools.audit", "--path", str(missing)],
         capture_output=True,
         text=True,
     )
