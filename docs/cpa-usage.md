@@ -26,13 +26,15 @@ MCP_CPA_UNIX_SOCKET=/run/fullish-cpa/api.sock
 MCP_CPA_MANAGEMENT_KEY_FILE=/var/lib/fullish/control/cpa-management.key
 ```
 
-这复用现有的 CPA Unix socket，CPA 继续监听主机回环地址。需要先将变量注入机器人进程，再注册内置 server：
+这复用现有的 CPA Unix socket，CPA 继续监听主机回环地址。变量注入机器人进程后，启动时会首次自动注册名为 `cpa_usage` 的内置 server，不需要额外执行服务器命令。已有同名配置和群授权不会被覆盖；从菜单删除后，后续重启也不会自动加回来。
+
+如需手动注册或恢复已删除的注册，可执行：
 
 ```sh
 docker exec fullish-bot-1 python -m fullish.cpa_usage_mcp --register
 ```
 
-该命令创建名为 `cpa_usage` 的注册，不覆盖同名已有配置，也不授予任何群。随后在已绑定的开发者私聊中执行：
+自动注册和手动注册都不授予任何群，手动命令不覆盖已有同名配置。随后在已绑定的开发者私聊中执行：
 
 ```text
 MCP 检查 cpa_usage

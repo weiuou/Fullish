@@ -80,6 +80,11 @@ def create_app() -> FastAPI:
     from fullish.tools import ToolRuntime
 
     control = GroupControl.from_env() if qq_settings else None
+    if control and model_settings:
+        from fullish.cpa_usage_mcp import auto_register
+
+        if auto_register(control.mcp):
+            emit("tool.mcp.registered", server="cpa_usage")
     policies = control.policies if control else None
     mcp = MCPRegistry(control.mcp) if control and model_settings else None
     tools = (
