@@ -400,6 +400,8 @@ source = { editable = "." }
 dependencies = [
     { name = "eth-account" },
     { name = "httpx" },
+    { name = "httpx2" },
+    { name = "jsonschema" },
     { name = "mcp" },
     { name = "nonebot-adapter-qq" },
     { name = "nonebot2", extra = ["fastapi", "httpx", "websockets"] },
@@ -422,6 +424,8 @@ dev = [
 requires-dist = [
     { name = "eth-account", specifier = ">=0.14,<0.15" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
+    { name = "httpx2", specifier = ">=2.16,<3" },
+    { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "mcp", specifier = ">=2,<3" },
     { name = "nonebot-adapter-qq", specifier = ">=1.7.3,<2" },
     { name = "nonebot2", extras = ["fastapi", "httpx", "websockets"], specifier = ">=2.4.4,<3" },

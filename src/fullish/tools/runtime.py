@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 from collections import OrderedDict, deque
@@ -26,6 +27,7 @@ from fullish.tools.web import DeepSeekWeb, ToolError
 
 if TYPE_CHECKING:
     from fullish.mcp_client import WalletMCPClient
+    from fullish.mcp_runtime import MCPRegistry
 
 
 @dataclass(frozen=True)
@@ -154,10 +156,12 @@ class ToolRuntime:
         audit: ToolAudit | None = None,
         policies: GroupPolicies | None = None,
         wallet: "WalletMCPClient | None" = None,
+        mcp: "MCPRegistry | None" = None,
     ):
         self.settings = settings
         self.policies = policies
         self.wallet = wallet
+        self.mcp = mcp
         self.audit = (
             audit
             if audit is not None
@@ -192,6 +196,8 @@ class ToolRuntime:
         self.images = PublicImages(transport=image_transport)
 
     async def close(self) -> None:
+        if self.mcp:
+            await self.mcp.close()
         if self.wallet:
             await self.wallet.close()
         await self.images.close()
@@ -223,9 +229,23 @@ class ToolRuntime:
         )
 
     def allowed(self, context: ToolContext | None) -> bool:
-        return self.base_allowed(context) or self.wallet_allowed(context)
+        return (
+            self.base_allowed(context) or self.wallet_allowed(context) or self.mcp_allowed(context)
+        )
+
+    def mcp_allowed(self, context: ToolContext | None) -> bool:
+        return bool(
+            self.mcp
+            and context
+            and context.sender_id
+            and context.message_id
+            and (not self.policies or self.policies.features(context.group_id).chat)
+            and self.mcp.allowed(context.group_id)
+        )
 
     async def prepare(self, context: ToolContext | None) -> None:
+        if self.mcp and context and self.mcp_allowed(context):
+            await self.mcp.prepare(context.group_id)
         if self.wallet and self.wallet_allowed(context):
             try:
                 await self.wallet.prepare()
@@ -264,6 +284,8 @@ class ToolRuntime:
         ]
         if self.wallet and self.wallet_allowed(context):
             schemas += self.wallet.mcp.schemas
+        if self.mcp and context and self.mcp_allowed(context):
+            schemas += self.mcp.schemas(context.group_id)
         return schemas
 
     def charge(self, context: ToolContext) -> None:
@@ -328,7 +350,9 @@ class ToolRuntime:
         metrics: ToolMetrics = {}
         invocation_id = uuid4().hex
         fields = {
-            "tool": name if name in DEFINITIONS else "unknown",
+            "tool": name
+            if name in DEFINITIONS or re.fullmatch(r"mcp_[A-Za-z0-9_-]{1,60}", name)
+            else "unknown",
             "invocation_id": invocation_id,
             # A provider ID is untrusted metadata, so expose only its fingerprint in logs.
             "tool_call_ref": reference(call_id) if call_id else "",
@@ -343,13 +367,23 @@ class ToolRuntime:
                 raise ToolError("tool_not_available")
             if len(raw) > 12000:
                 raise ToolError("invalid_tool_arguments")
-            try:
-                arguments = DEFINITIONS[name][0].model_validate_json(raw)
-            except ValidationError:
-                raise ToolError("invalid_tool_arguments") from None
+            dynamic_mcp = name not in DEFINITIONS and self.mcp is not None
+            if not dynamic_mcp:
+                try:
+                    arguments = DEFINITIONS[name][0].model_validate_json(raw)
+                except ValidationError:
+                    raise ToolError("invalid_tool_arguments") from None
             self.charge(context)
             async with asyncio.timeout(40):
-                if isinstance(arguments, WalletInfoArgs) and self.wallet:
+                if dynamic_mcp and self.mcp:
+                    data = await self.mcp.invoke(
+                        name,
+                        raw,
+                        context.group_id,
+                        images=images,
+                        authorized=lambda: self.mcp_allowed(context),
+                    )
+                elif isinstance(arguments, WalletInfoArgs) and self.wallet:
                     data = await self.wallet.info(arguments.token_address)
                 elif isinstance(arguments, WalletTransferArgs) and self.wallet:
                     # Identity and idempotency are derived from the actual QQ event.
@@ -418,6 +452,9 @@ class ToolRuntime:
                     raise ToolError("tool_not_available")
             outcome = "completed"
             result = {"ok": True, "data": data}
+            if dynamic_mcp and data.get("is_error"):
+                outcome = "failed"
+                result = {"ok": False, "error": "mcp_tool_error", "data": data}
             if name == "web_search":
                 metrics["result_count"] = len(data["results"])
             elif name == "web_fetch":

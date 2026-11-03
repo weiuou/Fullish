@@ -8,13 +8,15 @@ from nonebot.adapters.qq import Bot
 from nonebot.adapters.qq.event import C2CMessageCreateEvent
 from nonebot.adapters.qq.models import Dispatch
 
-from fullish.control import GroupControl
+from fullish.control import GroupControl, MCPCheck
+from fullish.mcp_runtime import MCPRegistry
 from fullish.telemetry import emit, message_trace, reference
 
 
 class DeveloperMenu:
-    def __init__(self, control: GroupControl):
+    def __init__(self, control: GroupControl, *, mcp: MCPRegistry | None = None):
         self.control = control
+        self.mcp = mcp
         self.usage: OrderedDict[str, deque[float]] = OrderedDict()
 
     def _charge(self, user: str) -> bool:
@@ -41,6 +43,10 @@ class DeveloperMenu:
                 emit("developer.command.skipped", reason="rate_limit", sender_ref=reference(user))
                 return
             reply = await asyncio.to_thread(self.control.command, user, event.id, event.content)
+            if isinstance(reply, MCPCheck):
+                reply = (
+                    await self.mcp.inspect(str(reply)) if self.mcp else "MCP 工具运行时尚未配置。"
+                )
             if reply:
                 await bot.post_c2c_messages(
                     openid=user, msg_type=0, content=reply[:1500], msg_id=event.id, msg_seq=1

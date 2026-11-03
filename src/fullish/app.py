@@ -76,17 +76,20 @@ def create_app() -> FastAPI:
     revision = os.environ.get("APP_REVISION", "dev")
     mode = "qq" if qq_settings else "ai_configured" if model_settings else "foundation"
     from fullish.mcp_client import WalletMCPClient
+    from fullish.mcp_runtime import MCPRegistry
     from fullish.tools import ToolRuntime
 
     control = GroupControl.from_env() if qq_settings else None
     policies = control.policies if control else None
+    mcp = MCPRegistry(control.mcp) if control and model_settings else None
     tools = (
         ToolRuntime(
             tool_settings or ToolSettings(frozenset()),
             policies=policies,
             wallet=WalletMCPClient(wallet_settings) if wallet_settings else None,
+            mcp=mcp,
         )
-        if tool_settings or wallet_settings
+        if tool_settings or wallet_settings or mcp
         else None
     )
     image_settings = ImageGenerationSettings.from_env() if model_settings else None
@@ -126,7 +129,7 @@ def create_app() -> FastAPI:
                 control=control,
                 postprocessor=postprocessor,
             ),
-            developer=DeveloperMenu(control) if control else None,
+            developer=DeveloperMenu(control, mcp=mcp) if control else None,
         )
         if report_settings:
             from fullish.release_report import DeploymentReporter, install_report_route

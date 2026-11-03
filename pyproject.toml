@@ -10,6 +10,8 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "eth-account>=0.14,<0.15",
     "httpx>=0.28.1,<1",
+    "httpx2>=2.16,<3",
+    "jsonschema>=4.26,<5",
     "mcp>=2,<3",
     "nonebot-adapter-qq>=1.7.3,<2",
     "nonebot2[fastapi,httpx,websockets]>=2.4.4,<3",

@@ -1,4 +1,4 @@
-"""MCP tool discovery/calls over an operator-controlled stdio connection."""
+"""Wallet-specific MCP adapter; generic server sessions live in mcp_runtime."""
 
 import asyncio
 import json
@@ -12,7 +12,7 @@ from fullish.settings import WalletSettings
 from fullish.tools.web import ToolError
 
 
-class StdioMCP:
+class WalletStdioMCP:
     def __init__(self, server, allowed_tools: frozenset[str]):
         self.server = server
         self.allowed_tools = allowed_tools
@@ -85,7 +85,7 @@ class WalletMCPClient:
         self.settings = settings
         public = json.loads((settings.directory / "wallet.json").read_text(encoding="utf-8"))
         self.address = public["address"]
-        self.mcp = StdioMCP(
+        self.mcp = WalletStdioMCP(
             server
             if server is not None
             else StdioServerParameters(
