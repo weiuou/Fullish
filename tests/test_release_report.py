@@ -11,17 +11,13 @@ from nonebot.adapters.qq import Bot
 from nonebot.drivers import URL
 from pydantic import ValidationError
 
-from fullish.model import ChatModel
-from fullish.release_report import (
-    DeploymentReporter,
-    GitHubHistory,
-    ReportError,
-    ReportRequest,
-    install_report_route,
-    proactive_messages_allowed,
-    report_token,
-    summarize,
-)
+from fullish.notifications.deployment import GitHubHistory, ReportError, ReportRequest, summarize
+from fullish.notifications.report import DeploymentReporter, install_report_route, report_token
+from fullish.policies.access import AccessPolicy
+from fullish.providers.chat import ChatProvider
+from fullish.scheduling.queue import GroupMessageQueue
+from fullish.sending.qq import proactive_messages_allowed
+from fullish.sending.service import DeliveryError, SendingService
 from fullish.settings import DeploymentReportSettings, ModelSettings, QQSettings
 
 BASE, FIRST, CURRENT = "a" * 40, "b" * 40, "c" * 40
@@ -107,7 +103,7 @@ def test_unexpected_history_is_not_misrepresented_as_new_commits(status: str) ->
 
 
 def test_large_inputs_are_all_summarized_without_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("fullish.release_report.CHUNK_CHARS", 80)
+    monkeypatch.setattr("fullish.notifications.deployment.CHUNK_CHARS", 80)
     inputs = [{"sha": FIRST, "message": "X" * 350}, {"sha": CURRENT, "message": "Y" * 350}]
     calls: list[str] = []
 
@@ -125,15 +121,46 @@ def test_large_inputs_are_all_summarized_without_sampling(monkeypatch: pytest.Mo
 )
 def test_report_delivery_and_failure_boundaries(case: str) -> None:
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "test-secret"))
+        model_calls = []
+        history_calls = []
+
+        def summarize_transport(request):
+            model_calls.append(json.loads(request.content)["messages"][-1]["content"])
+            if case == "model_failure":
+                return httpx.Response(503, text="upstream-private-body")
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "新增功能，并修正处理流程。"}}]}
+            )
+
+        def history_boundary(request):
+            history_calls.append(request.url.path)
+            if case == "rollback" and "/compare/" in request.url.path:
+                page = int(request.url.params["page"])
+                return httpx.Response(
+                    200,
+                    json={
+                        "status": "ahead",
+                        "total_commits": 2,
+                        "commits": [{"sha": FIRST if page == 1 else BASE}],
+                    },
+                )
+            return history_transport(request)
+
+        provider = ChatProvider(
+            ModelSettings("http://localhost/v1", "test-secret"),
+            transport=httpx.MockTransport(summarize_transport),
+        )
+        queue = GroupMessageQueue()
+        sending = SendingService(
+            AccessPolicy(notification_targets={"deployment": frozenset({GROUP})})
+        )
         reporter = DeploymentReporter(
             DeploymentReportSettings(GROUP, "weiuou/Fullish"),
-            model,
-            transport=httpx.MockTransport(history_transport),
+            provider,
+            transport=httpx.MockTransport(history_boundary),
+            queue=queue,
+            sending=sending,
         )
-        reporter.complete = AsyncMock(return_value="新增功能，并修正处理流程。")
-        if case == "model_failure":
-            reporter.complete.side_effect = RuntimeError("upstream-private-body")
         bot = Mock(spec=Bot)
         bot.adapter = Mock()
         bot.adapter.get_api_base.return_value = URL("https://api.sgroup.qq.com")
@@ -150,17 +177,12 @@ def test_report_delivery_and_failure_boundaries(case: str) -> None:
             if case == "disabled":
                 with pytest.raises(ReportError, match="proactive_messages_disabled"):
                     await reporter.send(request, bot)
-                reporter.complete.assert_not_awaited()
+                assert not model_calls
                 bot.post_group_messages.assert_not_awaited()
                 return
+            assert await reporter.send(request, bot) == "sent"
             if case == "rollback":
-                # Reverse the requested range to summarize the commits being removed.
-                with patch.object(GitHubHistory, "between", new_callable=AsyncMock) as between:
-                    between.return_value = [{"sha": FIRST, "message": "feature", "files": []}]
-                    assert await reporter.send(request, bot) == "sent"
-                    between.assert_awaited_once_with(CURRENT, BASE)
-            else:
-                assert await reporter.send(request, bot) == "sent"
+                assert history_calls[0] == f"/repos/weiuou/Fullish/compare/{CURRENT}...{BASE}"
             kwargs = bot.post_group_messages.call_args.kwargs
             assert kwargs["group_openid"] == GROUP and kwargs["msg_type"] == 0
             assert "msg_id" not in kwargs  # deployment reports are active messages
@@ -170,15 +192,16 @@ def test_report_delivery_and_failure_boundaries(case: str) -> None:
                 assert "upstream-private-body" not in kwargs["content"]
             elif case == "same_revision":
                 assert "没有新增 commit" in kwargs["content"]
-                reporter.complete.assert_not_awaited()
+                assert not model_calls
             elif case == "rollback":
                 assert "回滚撤销" in kwargs["content"]
             else:
                 assert "2 个新 commit" in kwargs["content"]
-                material = reporter.complete.call_args.args[0]
+                material = model_calls[-1]
                 assert "+feature" in material and "-feature" in material
         finally:
-            await model.close()
+            await queue.close()
+            await provider.close()
 
     asyncio.run(run())
 
@@ -201,13 +224,13 @@ def test_internal_route_requires_authentication_matching_revision_and_connected_
                 "/internal/deployment-report", json={**payload, "current": FIRST}, headers=headers
             )
             assert wrong.status_code == 409
-            with patch("fullish.release_report.nonebot.get_bot", side_effect=KeyError):
+            with patch("fullish.notifications.report.nonebot.get_bot", side_effect=KeyError):
                 offline = await client.post(
                     "/internal/deployment-report", json=payload, headers=headers
                 )
                 assert offline.status_code == 503
             reporter.send.assert_not_awaited()
-            with patch("fullish.release_report.nonebot.get_bot", return_value=Mock(spec=Bot)):
+            with patch("fullish.notifications.report.nonebot.get_bot", return_value=Mock(spec=Bot)):
                 sent = await client.post(
                     "/internal/deployment-report", json=payload, headers=headers
                 )
@@ -230,7 +253,7 @@ def test_group_permission_ignores_unrelated_enum_values_but_requires_a_boolean(a
         if isinstance(allowed, bool):
             assert await proactive_messages_allowed(bot, GROUP) is allowed
         else:
-            with pytest.raises(ReportError, match="invalid_group_permission_response"):
+            with pytest.raises(DeliveryError, match="invalid_group_permission_response"):
                 await proactive_messages_allowed(bot, GROUP)
         request = bot._request.call_args.args[0]
         assert str(request.url) == f"https://api.sgroup.qq.com/v2/groups/{GROUP}/bot_state"

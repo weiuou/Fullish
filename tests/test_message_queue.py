@@ -6,12 +6,16 @@ from unittest.mock import AsyncMock, Mock
 from nonebot.adapters.qq import Bot
 from nonebot.adapters.qq.event import GroupAtMessageCreateEvent
 
-from fullish.conversation import Conversations
-from fullish.message_queue import GroupMessageQueue
-from fullish.model import ChatModel
-from fullish.qq import handle_group
+from fullish.platforms.qq.adapter import handle_group
+from fullish.scheduling.queue import GroupMessageQueue
 from fullish.settings import ModelSettings
 from fullish.telemetry import trace_id
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_reply_engine,
+)
 
 
 def test_fifo_keeps_generation_send_ack_and_context_before_next_mention():
@@ -22,7 +26,7 @@ def test_fifo_keeps_generation_send_ack_and_context_before_next_mention():
         finish_send = asyncio.Event()
         calls = []
         sent = []
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
 
         async def respond(turns, **kwargs):
             calls.append(turns)
@@ -38,7 +42,7 @@ def test_fifo_keeps_generation_send_ack_and_context_before_next_mention():
             sent.append(event.id)
 
         model.reply = AsyncMock(side_effect=respond)
-        conversations = Conversations(model, min_interval=0)
+        conversations = make_conversation_service(model, min_interval=0)
         bot = Mock(spec=Bot)
         bot.send = AsyncMock(side_effect=send)
         queue = GroupMessageQueue()
@@ -65,9 +69,13 @@ def test_fifo_keeps_generation_send_ack_and_context_before_next_mention():
         first = event("one", "alice", "第一句")
         second = event("two", "bob", "第二句")
         try:
-            await queue.submit("g", "one", lambda: handle_group(conversations, bot, first))
+            await queue.submit(
+                "g", "one", lambda: handle_group(make_chat_handler(conversations), bot, first)
+            )
             await generating.wait()
-            await queue.submit("g", "two", lambda: handle_group(conversations, bot, second))
+            await queue.submit(
+                "g", "two", lambda: handle_group(make_chat_handler(conversations), bot, second)
+            )
             assert len(calls) == 1
             finish_generation.set()
             await sending.wait()
@@ -87,7 +95,7 @@ def test_fifo_keeps_generation_send_ack_and_context_before_next_mention():
             finish_generation.set()
             finish_send.set()
             await queue.close()
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(asyncio.wait_for(run(), 3))
 

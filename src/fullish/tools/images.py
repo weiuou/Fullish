@@ -11,8 +11,8 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from fullish.image_assets import ImageAssets
-from fullish.media import sniff_image_type
+from fullish.collection.parsers.image.formats import sniff_image_type
+from fullish.media.assets import ImageAssets
 from fullish.tools.errors import ToolError
 
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024

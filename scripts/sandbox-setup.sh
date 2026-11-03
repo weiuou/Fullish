@@ -50,9 +50,9 @@ finish() {
     exit "$result"
 }
 trap finish EXIT
-install -m 644 "$source_root/src/fullish/sandbox_server.py" /opt/fullish-sandbox/server.py
-install -m 644 "$source_root/src/fullish/group_policy.py" /opt/fullish-sandbox/group_policy.py
-install -m 644 "$source_root/src/fullish/sandbox_files.py" /opt/fullish-sandbox/sandbox_files.py
+install -m 644 "$source_root/src/fullish/sandbox/server.py" /opt/fullish-sandbox/server.py
+install -m 644 "$source_root/src/fullish/policies/groups.py" /opt/fullish-sandbox/group_policy.py
+install -m 644 "$source_root/src/fullish/sandbox/files.py" /opt/fullish-sandbox/sandbox_files.py
 install -m 644 "$source_root/deploy/fullish-sandbox.service" /etc/systemd/system/fullish-sandbox.service
 python3 - "$sandbox_group" "$sandbox_image" "$sandbox_host" "$sandbox_home" "$sandbox_uid" <<'PY'
 import os, pathlib, secrets, sys, tempfile

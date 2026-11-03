@@ -3,13 +3,17 @@
 import base64
 import json
 import os
+import shutil
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
-from fullish.sandbox_server import (
+from fullish.sandbox.server import (
     TEMP_OPTIONS,
     WORKER,
     WORKSPACE_OPTIONS,
@@ -17,6 +21,36 @@ from fullish.sandbox_server import (
     Sandboxes,
     Server,
 )
+
+
+def test_installed_broker_and_worker_import_with_only_their_standalone_files(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    for source, installed in [
+        ("sandbox/server.py", "server.py"),
+        ("sandbox/worker.py", "worker.py"),
+        ("sandbox/files.py", "sandbox_files.py"),
+        ("policies/groups.py", "group_policy.py"),
+    ]:
+        shutil.copyfile(root / "src/fullish" / source, tmp_path / installed)
+    for name, symbol in [("server.py", "Sandboxes"), ("worker.py", "execute")]:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import runpy,sys; "
+                "namespace=runpy.run_path(sys.argv[1],run_name='installed_probe'); "
+                "assert sys.argv[2] in namespace; assert 'fullish' not in sys.modules",
+                str(tmp_path / name),
+                symbol,
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
 
 GROUP = "g" * 32
 
@@ -245,13 +279,13 @@ def test_unix_socket_requires_auth_and_rejects_oversize_body(broker, tmp_path):
 
 
 def test_worker_cleanup_refuses_the_host_pid_namespace(monkeypatch):
-    from fullish import sandbox_worker
+    from fullish.sandbox import worker
 
-    monkeypatch.setattr(sandbox_worker.Path, "read_bytes", lambda _: b"host-init\0")
+    monkeypatch.setattr(worker.Path, "read_bytes", lambda _: b"host-init\0")
     kill = Mock()
-    monkeypatch.setattr(sandbox_worker.os, "kill", kill)
+    monkeypatch.setattr(worker.os, "kill", kill)
     with pytest.raises(RuntimeError, match="sandbox_pid_namespace_required"):
-        sandbox_worker.cleanup()
+        worker.cleanup()
     kill.assert_not_called()
 
 

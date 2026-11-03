@@ -17,16 +17,16 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import CallToolResult, ImageContent, ListToolsResult, TextContent, Tool
 from nonebot.adapters.qq import Bot
 from PIL import Image
-from test_group_control import private_payload
 
-from fullish.control import GroupControl
-from fullish.developer_menu import DeveloperMenu
-from fullish.image_assets import ImageAssets
-from fullish.mcp_runtime import MCPRegistry, ServerWorker, tool_name
-from fullish.mcp_servers import MCPConfigError, MCPStore, ServerConfig
+from fullish.mcp.runtime import MCPRegistry, ServerWorker, tool_name
+from fullish.mcp.store import MCPConfigError, MCPStore, ServerConfig
+from fullish.media.assets import ImageAssets
+from fullish.platforms.qq.menu import DeveloperMenu
 from fullish.settings import ToolSettings
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.runtime import ToolContext, ToolRuntime
 from fullish.tools.web import ToolError
+from tests.helpers import make_management
+from tests.test_group_control import private_payload
 
 GROUP = "a" * 32
 OTHER = "b" * 32
@@ -40,8 +40,8 @@ def command(control, text, user="developer"):
 def setup_control(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_BASE_URL", "https://model.example/v1")
     monkeypatch.delenv("QQ_ALLOWED_GROUPS", raising=False)
-    control = GroupControl(tmp_path)
-    command(control, "绑定开发者 " + control.pair())
+    control = make_management(tmp_path)
+    command(control, "绑定开发者 " + control.identity.pair())
     control.observe(GROUP)
     command(control, "选择 1")
     return control
@@ -50,22 +50,22 @@ def setup_control(tmp_path, monkeypatch):
 def test_menu_requires_developer_and_explicit_group_grant(tmp_path, monkeypatch):
     control = setup_control(tmp_path, monkeypatch)
     assert command(control, "MCP 添加 notes https://notes.example/mcp", "attacker") is None
-    assert not control.mcp.configs()
+    assert not MCPStore(control.store.directory).configs()
     assert "已添加" in (command(control, "MCP 添加 notes https://notes.example/mcp") or "")
-    assert control.mcp.configs()["notes"].groups == []
+    assert MCPStore(control.store.directory).configs()["notes"].groups == []
     assert "未更新" in (command(control, "MCP 添加 notes https://replacement.example/mcp") or "")
     command(control, "MCP 授权 notes")
-    assert GroupControl(tmp_path).mcp.configs()["notes"].groups == [GROUP]
+    assert MCPStore(tmp_path).configs()["notes"].groups == [GROUP]
     command(control, "MCP 限定 notes lookup,save")
-    assert control.mcp.configs()["notes"].tools == ["lookup", "save"]
+    assert MCPStore(control.store.directory).configs()["notes"].tools == ["lookup", "save"]
     command(control, "MCP 停用 notes")
-    assert not control.mcp.configs()["notes"].enabled
+    assert not MCPStore(control.store.directory).configs()["notes"].enabled
     command(control, "MCP 启用 notes")
     command(control, "MCP 撤销 notes")
-    assert control.mcp.configs()["notes"].enabled
-    assert control.mcp.configs()["notes"].groups == []
+    assert MCPStore(control.store.directory).configs()["notes"].enabled
+    assert MCPStore(control.store.directory).configs()["notes"].groups == []
     command(control, "MCP 删除 notes")
-    assert not control.mcp.configs()
+    assert not MCPStore(control.store.directory).configs()
 
 
 @pytest.mark.parametrize(
@@ -75,7 +75,7 @@ def test_menu_rejects_invalid_endpoints_without_echoing_them(tmp_path, monkeypat
     control = setup_control(tmp_path, monkeypatch)
     reply = command(control, "MCP 添加 notes " + endpoint)
     assert reply is not None and endpoint not in reply and "未更新" in reply
-    assert not control.mcp.configs()
+    assert not MCPStore(control.store.directory).configs()
 
 
 def test_menu_credentials_stay_in_server_environment(tmp_path, monkeypatch):
@@ -84,9 +84,9 @@ def test_menu_credentials_stay_in_server_environment(tmp_path, monkeypatch):
     assert "服务器" in (command(control, "MCP 添加 notes " + endpoint) or "")
     monkeypatch.setenv("MCP_NOTES_URL", endpoint)
     assert "已添加" in (command(control, "MCP 添加 notes env:MCP_NOTES_URL") or "")
-    assert endpoint == control.mcp.configs()["notes"].endpoint()
+    assert endpoint == MCPStore(control.store.directory).configs()["notes"].endpoint()
     assert "private-token" not in (command(control, "MCP 列表") or "")
-    assert b"private-token" not in control.mcp.path.read_bytes()
+    assert b"private-token" not in MCPStore(control.store.directory).path.read_bytes()
 
 
 def test_real_discovery_routing_results_and_reuse_without_wallet_wrappers(tmp_path):

@@ -14,10 +14,14 @@ from nonebot.adapters.qq.models import Dispatch
 from nonebot.adapters.qq.models.qq import Attachment
 
 from fullish.collection.qq import collect_group_message
-from fullish.conversation import Conversations
-from fullish.model import ChatModel
-from fullish.qq import GroupOnlyAdapter, handle_group
+from fullish.platforms.qq.adapter import GroupOnlyAdapter, handle_group
 from fullish.settings import ModelSettings
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_reply_engine,
+)
 
 PNG = b"\x89PNG\r\n\x1a\nsynthetic-quoted-picture"
 
@@ -85,13 +89,13 @@ def test_quoted_picture_reaches_model_through_real_dispatch(download_ok: bool) -
             downloads.append(str(request.url))
             return httpx.Response(200, content=PNG) if download_ok else httpx.Response(404)
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "fake-key"),
             transport=httpx.MockTransport(respond),
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(transport=httpx.MockTransport(media))
-        conversations = Conversations(model)
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(transport=httpx.MockTransport(media))
+        conversations = make_conversation_service(model)
         adapter = object.__new__(GroupOnlyAdapter)
         adapter.tasks = set()
         bot = bot_mock()
@@ -99,7 +103,7 @@ def test_quoted_picture_reaches_model_through_real_dispatch(download_ok: bool) -
         async def handle(incoming):
             await _check_reply(bot, incoming)
             _check_at_me(bot, incoming)
-            await handle_group(conversations, bot, incoming)
+            await handle_group(make_chat_handler(conversations), bot, incoming)
 
         bot.handle_event = AsyncMock(side_effect=handle)
         incoming = quoted_event(
@@ -128,16 +132,16 @@ def test_quoted_picture_reaches_model_through_real_dispatch(download_ok: bool) -
                 assert any("被引用消息" in part.get("text", "") for part in content[1:])
             bot.send.assert_awaited_once()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
 
 def test_quote_text_is_bounded_and_does_not_trigger_a_name_call():
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "fake-key"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "fake-key"))
         model.reply = AsyncMock(return_value="好")
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         try:
             for index in range(5):
                 incoming = quoted_event(content="评" * 100)
@@ -148,7 +152,7 @@ def test_quote_text_is_bounded_and_does_not_trigger_a_name_call():
                 await _check_reply(bot_mock(), incoming)
                 assert await conversations.receive_message(collect_group_message(incoming)) is None
             model.reply.assert_not_awaited()
-            group = conversations.groups["g"]
+            group = conversations.store.groups["g"]
             assert len(group.turns) == 3
             total = 0
             for item in group.turns:
@@ -166,19 +170,19 @@ def test_quote_text_is_bounded_and_does_not_trigger_a_name_call():
             # Old quotes remain text context but do not keep re-downloading media.
             for item in group.turns:
                 item["created"] -= 151
-            group.last_attempt -= 5
+            group.activity.last_attempt -= 5
             await conversations.receive("g", "later-call", "bob", "再看看", addressed=True)
             history = model.reply.call_args.args[0]
             assert not any(item.get("reply_images") for item in history)
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
 
 def test_quoted_and_current_pictures_have_separate_source_labels():
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "fake-key"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "fake-key"))
         model.download = AsyncMock(side_effect=lambda url, **kwargs: url)
         try:
             incoming = quoted_event()
@@ -208,7 +212,7 @@ def test_quoted_and_current_pictures_have_separate_source_labels():
             envelope = json.loads(parts[0]["text"])
             assert envelope["reply_to"]["sender"] == {"id": None, "display_name": None}
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -243,9 +247,9 @@ def test_quote_preserves_missing_identity_and_attachment_metadata(author, sender
 
 def test_current_quote_gets_priority_over_recent_images_and_deduplicates_old_original():
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "fake-key"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "fake-key"))
         model.reply = AsyncMock(return_value="看到了")
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         try:
             await conversations.receive(
                 "g",
@@ -255,7 +259,7 @@ def test_current_quote_gets_priority_over_recent_images_and_deduplicates_old_ori
                 addressed=False,
                 images=["https://cdn/quoted.png"],
             )
-            conversations.groups["g"].turns[0]["created"] -= 151
+            conversations.store.groups["g"].turns[0]["created"] -= 151
             await conversations.receive(
                 "g",
                 "recent",
@@ -284,8 +288,8 @@ def test_current_quote_gets_priority_over_recent_images_and_deduplicates_old_ori
             assert history[0]["images"] == []
             assert history[1]["images"] == []
             # The original's copy is also skipped when it is still recent.
-            conversations.groups["g"].turns[0]["created"] += 151
-            conversations.groups["g"].last_attempt -= 5
+            conversations.store.groups["g"].turns[0]["created"] += 151
+            conversations.store.groups["g"].activity.last_attempt -= 5
             await conversations.receive("g", "next", "bob", "再看看", addressed=True)
             history = model.reply.call_args.args[0]
             urls = [
@@ -295,6 +299,6 @@ def test_current_quote_gets_priority_over_recent_images_and_deduplicates_old_ori
             ]
             assert urls.count("https://cdn/quoted.png") == 1
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())

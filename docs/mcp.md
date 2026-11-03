@@ -77,9 +77,9 @@ MCP 添加 amap env:MCP_AMAP_URL
 
 ```sh
 # 配置文件须位于容器能读取的位置。
-docker exec fullish-bot-1 python -m fullish.mcp_servers import /tmp/notes.json
-docker exec fullish-bot-1 python -m fullish.mcp_servers list
-docker exec fullish-bot-1 python -m fullish.mcp_servers check notes
+docker exec fullish-bot-1 python -m fullish.mcp.store import /tmp/notes.json
+docker exec fullish-bot-1 python -m fullish.mcp.store list
+docker exec fullish-bot-1 python -m fullish.mcp.store check notes
 ```
 
 导入会完整替换同名注册，包括 `groups`、`tools` 和启用状态；未填写的群授权默认为空。随后可从私聊菜单选择群并授权。配置保存为 `GROUP_CONTROL_DIR/mcp.sqlite3`，沿用现有持久挂载，文件初始权限 `0600`。

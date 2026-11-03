@@ -12,13 +12,13 @@ import rlp
 from eth_account import Account
 from eth_utils.crypto import keccak
 
-from fullish.group_policy import Features, GroupPolicies
-from fullish.mcp_client import WalletMCPClient
+from fullish.policies.groups import Features, GroupPolicies
 from fullish.settings import ToolSettings, WalletSettings
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.runtime import ToolContext, ToolRuntime
 from fullish.tools.web import ToolError
-from fullish.wallet import BSCWallet, create_wallet, display_units, units, write_private
-from fullish.wallet_mcp import create_server
+from fullish.wallet.client import WalletMCPClient
+from fullish.wallet.server import create_server
+from fullish.wallet.service import BSCWallet, create_wallet, display_units, units, write_private
 
 GROUP = "g" * 32
 DESTINATION = "0x" + "12" * 20
@@ -327,18 +327,16 @@ def test_all_groups_wallet_still_obeys_chat_revocation(settings):
 
 
 def test_deployment_acceptance_uses_mcp_and_checks_chain(settings, monkeypatch):
-    from fullish import wallet_check
+    from fullish.wallet import check
 
     rpc = RPC()
     server = create_server(settings, wallet_factory=lambda s: open_wallet(s, rpc))
     monkeypatch.setattr(WalletSettings, "from_env", classmethod(lambda cls: settings))
-    monkeypatch.setattr(
-        wallet_check, "WalletMCPClient", lambda s: WalletMCPClient(s, server=server)
-    )
-    result = asyncio.run(wallet_check.check())
+    monkeypatch.setattr(check, "WalletMCPClient", lambda s: WalletMCPClient(s, server=server))
+    result = asyncio.run(check.check())
     assert result["wallet"] == "ok" and result["mcp_tools"] == 3
     assert result["bnb_balance"] == "100"
     assert not rpc.sent
     rpc.chain = "0x1"
     with pytest.raises(ToolError, match="wrong_chain"):
-        asyncio.run(wallet_check.check())
+        asyncio.run(check.check())

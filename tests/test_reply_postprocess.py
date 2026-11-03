@@ -9,13 +9,13 @@ import httpx
 import pytest
 
 from fullish.collection import MessagePart, ParsedContent, QuotedMessage
-from fullish.conversation import Conversations
-from fullish.model import ChatModel
+from fullish.reply.engine import ReplyEngine
+from fullish.reply.postprocess import ReplyPostprocessor
 from fullish.sending import Audio, Image, OutgoingMessage, QQFace, ReplyPlan, Text
 from fullish.sending.assets import ReplyAsset, ReplyAssets
-from fullish.sending.postprocess import ReplyPostprocessor
 from fullish.sending.schema import outgoing
 from fullish.settings import ModelSettings, ReplyPostprocessSettings
+from tests.helpers import make_conversation_service
 
 BACKEND = ModelSettings("https://model.example/v1", "test-key", model="main-model")
 
@@ -466,12 +466,14 @@ def test_conversation_runs_optional_processing_only_after_a_non_silent_draft(ena
             assert payload["context"][-1]["text"] == "说说看"
             return completion({"messages": [text_message("表达后的回答 🙂")]})
 
-        model = Mock(spec=ChatModel)
+        model = Mock(spec=ReplyEngine)
         model.reply = AsyncMock(side_effect=generate)
         processor = ReplyPostprocessor(
             BACKEND, ReplyPostprocessSettings(), transport=httpx.MockTransport(respond)
         )
-        conversations = Conversations(model, postprocessor=processor if enabled else None)
+        conversations = make_conversation_service(
+            model, postprocessor=processor if enabled else None
+        )
         try:
             result = await conversations.receive("g", "m", "u", "说说看", addressed=True)
             assert order == (["generate", "process"] if enabled and draft else ["generate"])
@@ -480,8 +482,8 @@ def test_conversation_runs_optional_processing_only_after_a_non_silent_draft(ena
             else:
                 assert result == draft
             # Generating or planning a reply must not record unsent assistant messages.
-            assert all(turn["role"] == "user" for turn in conversations.groups["g"].turns)
-            assert conversations.active == 0
+            assert all(turn["role"] == "user" for turn in conversations.store.groups["g"].turns)
+            assert conversations.generation.active == 0
         finally:
             await processor.close()
 

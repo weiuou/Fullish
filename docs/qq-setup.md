@@ -77,7 +77,7 @@ sudo bash scripts/server-setup.sh ghcr.io/weiuou/fullish
 使用一次真实生成验证模型（会消耗少量额度）：
 
 ```sh
-sudo docker exec fullish-bot-1 python -m fullish.check_model
+sudo docker exec fullish-bot-1 python -m fullish.providers.check
 ```
 
 `/health/dependencies` 只查询模型目录和 QQ 连接状态，不生成文本。Docker readiness 只检查进程已启动，避免 QQ / 模型短暂故障触发错误回滚。`ai_configured` 表示 AI 配置已加载；是否真正可用仍需查看依赖检查和实际生成结果。

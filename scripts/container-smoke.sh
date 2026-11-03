@@ -36,7 +36,7 @@ with urllib.request.urlopen("http://127.0.0.1:8080/version", timeout=3) as respo
     body = json.load(response)
 assert body["revision"] == os.environ["EXPECTED_REVISION"], body
 assert body["mode"] == "foundation", body
-from fullish.tool_audit import ToolAudit
+from fullish.tools.audit import ToolAudit
 audit = ToolAudit()
 audit.save({"audit_id": "smoke", "trace_id": "smoke-trace", "snapshot": {"results": []}})
 assert audit.read(trace_id="smoke-trace")[0]["audit_id"] == "smoke"
@@ -51,7 +51,7 @@ docker run --rm --read-only --network none \
     --mount "type=volume,source=$audit_volume,target=/var/lib/fullish/tool-audit,readonly" \
     --entrypoint python "$image" -c '
 from pathlib import Path
-from fullish.tool_audit import ToolAudit
+from fullish.tools.audit import ToolAudit
 audit = ToolAudit(Path("/var/lib/fullish/tool-audit/audit.sqlite3"))
 assert audit.read(trace_id="smoke-trace")[0]["audit_id"] == "smoke"
 '

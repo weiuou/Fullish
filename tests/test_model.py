@@ -7,8 +7,10 @@ import json
 import httpx
 import pytest
 
-from fullish.model import ChatModel, ModelError, sniff_image_type
+from fullish.collection.parsers.image.formats import sniff_image_type
+from fullish.errors import ModelError
 from fullish.settings import ModelSettings, QQSettings
+from tests.helpers import close_reply_engine, make_reply_engine, model_provider
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
@@ -27,18 +29,18 @@ def test_authenticated_model_and_chat_contract() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": "聊什么呢"}}]})
 
     async def run() -> None:
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "test-secret"),
             transport=httpx.MockTransport(respond),
         )
         try:
-            assert await model.available()
+            assert await model_provider(model).available()
             assert (
                 await model.reply([{"role": "user", "content": "你好"}], addressed=True)
                 == "聊什么呢"
             )
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -63,12 +65,12 @@ def test_images_are_fetched_without_the_model_credential() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": "看到了"}}]})
 
     async def run() -> None:
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "test-secret"),
             transport=httpx.MockTransport(respond),
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(transport=httpx.MockTransport(media))
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(transport=httpx.MockTransport(media))
         try:
             assert (
                 await model.reply(
@@ -86,7 +88,7 @@ def test_images_are_fetched_without_the_model_credential() -> None:
             assert len(seen) == 1
             assert "Authorization" not in seen[0].headers
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -114,12 +116,12 @@ def test_unusable_images_are_skipped(url: str, kind: str) -> None:
     headers = {"content-type": "image/png"} if kind in {"empty", "html_image_header"} else {}
 
     async def run() -> None:
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "secret"),
             transport=httpx.MockTransport(lambda _: httpx.Response(500)),
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(
             transport=httpx.MockTransport(
                 lambda _: httpx.Response(200, content=body, headers=headers)
             )
@@ -127,7 +129,7 @@ def test_unusable_images_are_skipped(url: str, kind: str) -> None:
         try:
             assert await model.download(url) is None
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -150,7 +152,7 @@ def test_sniff_image_type() -> None:
 )
 def test_errors_never_include_upstream_bodies(status: int, body: dict, code: str) -> None:
     async def run() -> None:
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "test-secret"),
             transport=httpx.MockTransport(lambda _: httpx.Response(status, json=body)),
         )
@@ -158,7 +160,7 @@ def test_errors_never_include_upstream_bodies(status: int, body: dict, code: str
             with pytest.raises(ModelError, match=f"^{code}$"):
                 await model.reply([], addressed=True)
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -169,7 +171,7 @@ def test_timeout_and_silence() -> None:
         return httpx.Response(200)
 
     async def run() -> None:
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "secret", timeout=0.01),
             transport=httpx.MockTransport(slow),
         )
@@ -177,8 +179,8 @@ def test_timeout_and_silence() -> None:
             with pytest.raises(ModelError, match="connection_or_timeout"):
                 await model.reply([], addressed=True)
         finally:
-            await model.close()
-        model = ChatModel(
+            await close_reply_engine(model)
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "secret"),
             transport=httpx.MockTransport(
                 lambda _: httpx.Response(
@@ -188,9 +190,9 @@ def test_timeout_and_silence() -> None:
         )
         try:
             assert await model.reply([], addressed=False) is None
-            assert not await model.available()
+            assert not await model_provider(model).available()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 

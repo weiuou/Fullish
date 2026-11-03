@@ -8,9 +8,11 @@ import httpx
 import pytest
 from nonebot import logger
 
-from fullish.model import MAX_TOOL_CALLS, ChatModel, ModelError
+from fullish.errors import ModelError
+from fullish.reply.engine import MAX_TOOL_CALLS
 from fullish.settings import ModelSettings, ToolSettings
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.runtime import ToolContext, ToolRuntime
+from tests.helpers import close_reply_engine, make_reply_engine
 
 
 def response(message):
@@ -40,7 +42,7 @@ def test_primary_failure_falls_back_on_same_cpa_within_deadline(failure):
             assert body["messages"] == posted[0]["messages"]
             return response({"content": "备用模型的回复"})
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("https://cpa.example/v1", "private-key", timeout=0.3),
             transport=httpx.MockTransport(respond),
         )
@@ -48,7 +50,7 @@ def test_primary_failure_falls_back_on_same_cpa_within_deadline(failure):
             assert await model.reply([], addressed=True) == "备用模型的回复"
             assert [p["model"] for p in posted] == ["gemini-3.8-flash-high", "gpt-6-luna"]
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -62,7 +64,7 @@ def test_healthy_reply_or_silence_does_not_switch(primary):
             requests.append(json.loads(request.content))
             return response({"content": "<SILENCE>"})
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key", model=primary),
             transport=httpx.MockTransport(respond),
         )
@@ -70,7 +72,7 @@ def test_healthy_reply_or_silence_does_not_switch(primary):
             assert await model.reply([], addressed=False) is None
             assert len(requests) == 1
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -114,7 +116,7 @@ def test_switch_after_tools_preserves_results_without_replaying_actions(finalizi
             assert ("tools" not in body) == finalizing
             return response({"content": "已依据工具结果回答"})
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             tools=runtime,
             transport=httpx.MockTransport(respond),
@@ -124,7 +126,7 @@ def test_switch_after_tools_preserves_results_without_replaying_actions(finalizi
             assert runtime.invoke.await_count == count
             assert len(posted) == 3
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -145,7 +147,7 @@ def test_both_models_failed_or_fallback_disabled_does_not_loop(primary, fallback
             posted.append(json.loads(request.content))
             return httpx.Response(503)
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key", model=primary, fallback_model=fallback),
             transport=httpx.MockTransport(respond),
         )
@@ -154,7 +156,7 @@ def test_both_models_failed_or_fallback_disabled_does_not_loop(primary, fallback
                 await model.reply([], addressed=True)
             assert len(posted) == expected
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -192,7 +194,7 @@ def test_fallback_stays_for_remaining_tool_rounds_then_resets_and_logs_metadata(
                 return response({"tool_calls": [tool("one")]})
             return response({"content": "ok"})
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "private-key"),
             tools=runtime,
             transport=httpx.MockTransport(respond),
@@ -211,7 +213,7 @@ def test_fallback_stays_for_remaining_tool_rounds_then_resets_and_logs_metadata(
             assert events[0]["model"] == "gpt-6-luna"
             assert "private" not in json.dumps(records)
         finally:
-            await model.close()
+            await close_reply_engine(model)
             logger.remove(sink)
 
     asyncio.run(run())

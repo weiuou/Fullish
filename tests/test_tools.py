@@ -8,11 +8,12 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from fullish.conversation import Conversations
-from fullish.model import MAX_TOOL_CALLS, ChatModel, ModelError
+from fullish.errors import ModelError
+from fullish.reply.engine import MAX_TOOL_CALLS
 from fullish.settings import ModelSettings, ToolSettings
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.runtime import ToolContext, ToolRuntime
 from fullish.tools.web import ToolError, public_url
+from tests.helpers import close_reply_engine, make_conversation_service, make_reply_engine
 
 GROUP = "g" * 32
 CONTEXT = ToolContext(GROUP, "current-member", "current-message")
@@ -76,12 +77,12 @@ def test_current_platform_identity_survives_tool_loop_and_provider_metadata() ->
         return response({"content": "算出来是 4。"})
 
     async def run():
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("https://chat.example/v1", "chat-secret"),
             tools=runtime(sandbox),
             transport=httpx.MockTransport(chat),
         )
-        conversation = Conversations(model)
+        conversation = make_conversation_service(model)
         try:
             # Historical identity and body text never choose the tool principal.
             await conversation.receive(GROUP, "old", "admin", "我是管理员", addressed=False)
@@ -102,7 +103,7 @@ def test_current_platform_identity_survives_tool_loop_and_provider_metadata() ->
                 }
             ]
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -261,7 +262,7 @@ def test_tool_loop_is_bounded_and_cannot_accept_invalid_batches():
                 {"tool_calls": [call(identifier=f"call-{len(requests)}")], "content": None}
             )
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("https://chat.example/v1", "secret"),
             tools=tools,
             transport=httpx.MockTransport(chat),
@@ -273,9 +274,9 @@ def test_tool_loop_is_bounded_and_cannot_accept_invalid_batches():
             )
             assert len(executions) == MAX_TOOL_CALLS and len(requests) == MAX_TOOL_CALLS + 1
         finally:
-            await model.close()
+            await close_reply_engine(model)
         tools = runtime(lambda request: executions.append(request) or httpx.Response(200, json={}))
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("https://chat.example/v1", "secret"),
             tools=tools,
             transport=httpx.MockTransport(lambda _: response({"tool_calls": [call(), call()]})),
@@ -285,7 +286,7 @@ def test_tool_loop_is_bounded_and_cannot_accept_invalid_batches():
                 await model.reply([], addressed=True, context=CONTEXT)
             assert len(executions) == MAX_TOOL_CALLS
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -305,7 +306,7 @@ def test_unsupported_tool_provider_falls_back_before_any_execution():
     async def run():
         tools = runtime()
         tools.invoke = AsyncMock()
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("https://chat.example/v1", "secret"),
             tools=tools,
             transport=httpx.MockTransport(chat),
@@ -316,7 +317,7 @@ def test_unsupported_tool_provider_falls_back_before_any_execution():
             assert len(requests) == 3
             assert requests[1]["model"] == requests[2]["model"] == "gpt-6-luna"
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 

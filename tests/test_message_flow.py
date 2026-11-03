@@ -14,11 +14,15 @@ from nonebot.adapters.qq.exception import ActionFailed
 from nonebot.adapters.qq.models import Dispatch
 from nonebot.drivers import Response
 
-from fullish.conversation import Conversations
-from fullish.model import ChatModel
-from fullish.qq import GroupOnlyAdapter, handle_group
+from fullish.platforms.qq.adapter import GroupOnlyAdapter, handle_group
 from fullish.settings import ModelSettings
 from fullish.telemetry import emit, message_trace, trace_id
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_reply_engine,
+)
 
 
 @pytest.fixture
@@ -65,11 +69,11 @@ def test_bare_mention_flows_from_dispatch_to_accepted_reply(flow, content) -> No
                 200, json={"choices": [{"message": {"content": "reply-private"}}]}
             )
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "credential-private"),
             transport=httpx.MockTransport(respond),
         )
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         adapter = object.__new__(GroupOnlyAdapter)
         adapter.tasks = set()
         bot = Mock(spec=Bot)
@@ -78,7 +82,7 @@ def test_bare_mention_flows_from_dispatch_to_accepted_reply(flow, content) -> No
 
         async def handle(incoming):
             _check_at_me(bot, incoming)
-            await handle_group(conversations, bot, incoming)
+            await handle_group(make_chat_handler(conversations), bot, incoming)
 
         bot.handle_event = AsyncMock(side_effect=handle)
         incoming = event(content=content)
@@ -90,7 +94,9 @@ def test_bare_mention_flows_from_dispatch_to_accepted_reply(flow, content) -> No
             await asyncio.gather(*adapter.tasks)
             assert json.loads(payloads[0]["messages"][1]["content"])["text"] == "（@了 Fullish）"
             bot.send.assert_awaited_once()
-            assert [turn["role"] for turn in conversations.groups[incoming.group_openid].turns] == [
+            assert [
+                turn["role"] for turn in conversations.store.groups[incoming.group_openid].turns
+            ] == [
                 "user",
                 "assistant",
             ]
@@ -133,7 +139,7 @@ def test_bare_mention_flows_from_dispatch_to_accepted_reply(flow, content) -> No
             ):
                 assert private not in serialized
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -149,11 +155,11 @@ def test_failures_are_acknowledged_and_only_accepted_replies_are_recorded(flow, 
             content = "<SILENCE>" if case == "silence" else "reply-private"
             return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "credential-private", timeout=0.05),
             transport=httpx.MockTransport(respond),
         )
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         bot = Mock(spec=Bot)
         bot.send = AsyncMock()
         if case == "send_failure":
@@ -161,12 +167,15 @@ def test_failures_are_acknowledged_and_only_accepted_replies_are_recorded(flow, 
                 Response(403, content=json.dumps({"code": 112233, "message": "qq-body-private"}))
             )
         try:
-            await handle_group(conversations, bot, event(content="message-body-private"))
-            assert conversations.active == 0
-            assert not conversations.groups["group-private-id"].lock.locked()
+            await handle_group(
+                make_chat_handler(conversations), bot, event(content="message-body-private")
+            )
+            assert conversations.generation.active == 0
+            assert not conversations.store.groups["group-private-id"].activity.lock.locked()
             acknowledged = case in {"model_failure", "timeout"}
             assert all(
-                turn["role"] == "user" for turn in conversations.groups["group-private-id"].turns
+                turn["role"] == "user"
+                for turn in conversations.store.groups["group-private-id"].turns
             ) == (not acknowledged)
             assert len({record["trace_id"] for record in flow}) == 1
             assert flow[-1]["stage"] == "qq.message.completed"
@@ -197,24 +206,24 @@ def test_failures_are_acknowledged_and_only_accepted_replies_are_recorded(flow, 
             ):
                 assert private not in serialized
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
 
 def test_context_and_media_sources_can_be_followed_into_the_next_request(flow) -> None:
     async def run() -> None:
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "credential-private"),
             transport=httpx.MockTransport(
                 lambda _: httpx.Response(200, json={"choices": [{"message": {"content": "好"}}]})
             ),
         )
-        await model.media.aclose()
-        model.media = httpx.AsyncClient(
+        await model.reader.media.aclose()
+        model.reader.media = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: httpx.Response(404))
         )
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         try:
             await conversations.receive(
                 "g",
@@ -234,7 +243,7 @@ def test_context_and_media_sources_can_be_followed_into_the_next_request(flow) -
             assert "credential-private" not in json.dumps(flow)
             assert "cdn.example" not in json.dumps(flow)
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -268,13 +277,15 @@ def test_concurrent_traces_are_isolated_and_restored_after_cancellation(flow) ->
 
 def test_decisions_explain_context_only_allowlist_and_cooldown(flow) -> None:
     async def run() -> None:
-        model = ChatModel(ModelSettings("http://localhost/v1", "test"))
+        model = make_reply_engine(ModelSettings("http://localhost/v1", "test"))
         model.reply = AsyncMock(return_value="好")
-        conversations = Conversations(model, allowed_groups=frozenset({"g"}), min_interval=0.01)
+        conversations = make_conversation_service(
+            model, allowed_groups=frozenset({"g"}), min_interval=0.01
+        )
         try:
             await conversations.receive("other", "1", "u", "", addressed=True)
             await conversations.receive("g", "1", "u", "", addressed=False)
-            assert conversations.groups["g"].turns[-1]["content"].endswith("[无文字内容]")
+            assert conversations.store.groups["g"].turns[-1]["content"].endswith("[无文字内容]")
             assert await conversations.receive("g", "2", "u", "", addressed=True) == "好"
             await conversations.receive("g", "3", "u", "", addressed=True)
             assert [r["reason"] for r in flow if r["stage"] == "conversation.skipped"] == [
@@ -286,6 +297,6 @@ def test_decisions_explain_context_only_allowlist_and_cooldown(flow) -> None:
             )
             assert model.reply.await_count == 2
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())

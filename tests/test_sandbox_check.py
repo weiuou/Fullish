@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from fullish import sandbox_check
+from fullish.sandbox import check
 from fullish.settings import ToolSettings
 
 
@@ -16,7 +16,7 @@ from fullish.settings import ToolSettings
 def test_deployment_gate_requires_a_real_success(monkeypatch, failure):
     settings = ToolSettings(frozenset({"synthetic-group"}), sandbox_socket="/missing/socket")
     monkeypatch.setattr(
-        sandbox_check.ToolSettings, "from_env", lambda: None if failure == "disabled" else settings
+        check.ToolSettings, "from_env", lambda: None if failure == "disabled" else settings
     )
     data = {
         "output": "fullish-sandbox-ready",
@@ -45,12 +45,12 @@ def test_deployment_gate_requires_a_real_success(monkeypatch, failure):
 
     tools.file_request = AsyncMock(side_effect=file_request)
     factory = Mock(return_value=tools)
-    monkeypatch.setattr(sandbox_check, "ToolRuntime", factory)
+    monkeypatch.setattr(check, "ToolRuntime", factory)
     if failure in {"disabled", "success"}:
-        asyncio.run(sandbox_check.check())
+        asyncio.run(check.check())
     else:
         with pytest.raises(RuntimeError, match="sandbox_acceptance_failed"):
-            asyncio.run(sandbox_check.check())
+            asyncio.run(check.check())
     if failure == "disabled":
         factory.assert_not_called()
     else:

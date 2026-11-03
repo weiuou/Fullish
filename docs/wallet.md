@@ -54,7 +54,7 @@ WALLET_RPC_URL=https://bsc-dataseed.bnbchain.org
 
 Compose 把该宿主机目录挂载为 `/var/lib/fullish/wallet` 并固定 `WALLET_DIR`。更新、重建容器和回滚镜像均保留钱包与交易记录；沙箱不挂载该目录。`/health/dependencies` 仅显示是否启用和公开地址，不联网探测余额，也不证明钱包已完成真实链上转账。
 
-部署脚本在替换旧服务前，使用候选镜像和实际 Compose 挂载运行 `python -m fullish.wallet_check`，检查密钥解锁、MCP 工具发现、BSC chain ID 与余额读取；启动新服务后再检查一次。该检查只读链上数据，不发送资产；失败会阻止发布或触发原有回滚。钱包子进程串行运行，以控制小服务器上的解锁内存开销。
+部署脚本在替换旧服务前，使用候选镜像和实际 Compose 挂载运行 `python -m fullish.wallet.check`，检查密钥解锁、MCP 工具发现、BSC chain ID 与余额读取；启动新服务后再检查一次。该检查只读链上数据，不发送资产；失败会阻止发布或触发原有回滚。钱包子进程串行运行，以控制小服务器上的解锁内存开销。
 
 显式 `--rollback` 允许退回尚未支持钱包的旧镜像，因此跳过钱包验收；原钱包文件和配置继续保留，但旧版本不能使用钱包。
 
@@ -65,7 +65,7 @@ Compose 把该宿主机目录挂载为 `/var/lib/fullish/wallet` 并固定 `WALL
   "mcpServers": {
     "fullish-wallet": {
       "command": "/absolute/path/to/python",
-      "args": ["-m", "fullish.wallet_mcp"],
+      "args": ["-m", "fullish.wallet.server"],
       "env": {
         "WALLET_ENABLED": "true",
         "WALLET_DIR": "/absolute/path/to/private/wallet",

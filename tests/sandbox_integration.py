@@ -100,7 +100,7 @@ def main() -> None:
         "bot",
         "python",
         "-m",
-        "fullish.sandbox_check",
+        "fullish.sandbox.check",
     ]
     print(run(*candidate, env=environment), flush=True)
     # Exact regression: a healthy bot image with no mounted broker socket must fail.
@@ -115,7 +115,7 @@ def main() -> None:
             image,
             "python",
             "-m",
-            "fullish.sandbox_check",
+            "fullish.sandbox.check",
         ],
         capture_output=True,
         timeout=60,

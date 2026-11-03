@@ -7,10 +7,10 @@ import time
 
 import httpx
 
+from fullish.collection.parsers.image.formats import sniff_image_type
 from fullish.errors import ModelError
 from fullish.generation.base import GeneratedImage
 from fullish.generation.references import prepare_reference_images
-from fullish.media import sniff_image_type
 from fullish.settings import ImageGenerationSettings, ModelSettings
 from fullish.telemetry import elapsed_ms, emit, operation_trace
 

@@ -10,16 +10,22 @@ import httpx
 import pytest
 from nonebot import logger
 from nonebot.adapters.qq import Bot
-from test_sending import event
 
-from fullish.conversation import Conversations
+from fullish.errors import ModelError
 from fullish.generation import GeneratedImage
 from fullish.generation.openai import OpenAIImageGenerator, decode_image
-from fullish.model import ChatModel, ModelError
-from fullish.qq import IMAGE_FAILURE_REPLY, IMAGE_RATE_LIMIT_REPLY, handle_group
+from fullish.platforms.qq.adapter import handle_group
+from fullish.reply.handler import IMAGE_FAILURE_REPLY, IMAGE_RATE_LIMIT_REPLY
 from fullish.sending import Image, OutgoingMessage, Text
 from fullish.settings import ImageGenerationSettings, ModelSettings, ToolSettings
-from fullish.tools import ToolContext, ToolRuntime
+from fullish.tools.runtime import ToolContext, ToolRuntime
+from tests.helpers import (
+    close_reply_engine,
+    make_chat_handler,
+    make_conversation_service,
+    make_reply_engine,
+)
+from tests.test_sending import event
 
 PNG = b"\x89PNG\r\n\x1a\nsynthetic-generated-picture"
 MODEL = "gpt-image-2.5"
@@ -214,10 +220,10 @@ def test_tool_generation_delivers_text_and_generated_bytes_through_real_qq_sende
         generator = OpenAIImageGenerator(
             connection, ImageGenerationSettings(), transport=httpx.MockTransport(respond)
         )
-        model = ChatModel(
+        model = make_reply_engine(
             connection, transport=httpx.MockTransport(respond), image_generator=generator
         )
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         incoming = event()
         incoming.content = request_text
         with (
@@ -229,7 +235,7 @@ def test_tool_generation_delivers_text_and_generated_bytes_through_real_qq_sende
             patch.object(Bot, "post_group_messages", new=AsyncMock()) as post,
         ):
             try:
-                await handle_group(conversations, object.__new__(Bot), incoming)
+                await handle_group(make_chat_handler(conversations), object.__new__(Bot), incoming)
                 upload.assert_awaited_once_with(
                     group_openid="g", srv_send_msg=False, file_type=1, file_data=PNG
                 )
@@ -241,9 +247,11 @@ def test_tool_generation_delivers_text_and_generated_bytes_through_real_qq_sende
                     "/v1/chat/completions",
                     "/v1/images/generations",
                 ]
-                assert conversations.groups["g"].turns[-1]["content"] == "给你画了只橘猫。[图片]"
+                assert (
+                    conversations.store.groups["g"].turns[-1]["content"] == "给你画了只橘猫。[图片]"
+                )
             finally:
-                await model.close()
+                await close_reply_engine(model)
         assert generator.client.is_closed
 
     asyncio.run(run())
@@ -265,7 +273,7 @@ def test_chat_tool_routing_does_not_generate_for_text_or_bad_calls(case):
             calls.append(calls[0])
         elif case == "failure":
             generator.generate.side_effect = ModelError("image_blocked")
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
             image_generator=None if case == "disabled" else generator,
@@ -281,7 +289,7 @@ def test_chat_tool_routing_does_not_generate_for_text_or_bad_calls(case):
             else:
                 generator.generate.assert_not_awaited()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -296,7 +304,7 @@ def test_generated_reply_caption_and_separate_image_deadline(caption):
         generator = Mock()
         generator.generate = generate
         generator.close = AsyncMock()
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key", timeout=0.02),
             transport=httpx.MockTransport(
                 lambda _: httpx.Response(200, json=tool_response(caption=caption))
@@ -309,7 +317,7 @@ def test_generated_reply_caption_and_separate_image_deadline(caption):
             expected = (Text(caption), Image(PNG)) if caption else (Image(PNG),)
             assert reply.parts == expected
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -334,7 +342,7 @@ def test_invalid_tool_arguments_do_not_reach_generation(options):
         generator = Mock()
         generator.generate = AsyncMock()
         generator.close = AsyncMock()
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
             image_generator=generator,
@@ -344,7 +352,7 @@ def test_invalid_tool_arguments_do_not_reach_generation(options):
                 await model.reply([], addressed=True)
             generator.generate.assert_not_awaited()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -371,7 +379,7 @@ def test_reply_model_can_choose_image_text_or_silence_without_addressed_gate(cho
             )
             return httpx.Response(200, json=payload)
 
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(respond),
             image_generator=generator,
@@ -388,7 +396,7 @@ def test_reply_model_can_choose_image_text_or_silence_without_addressed_gate(cho
                 assert result == (None if choice == "silence" else "哈哈")
                 generator.generate.assert_not_awaited()
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -399,27 +407,27 @@ def test_generation_failure_sends_text_acknowledgement_and_releases_conversation
         generator = Mock()
         generator.generate = AsyncMock(side_effect=ModelError(code))
         generator.close = AsyncMock()
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(lambda _: httpx.Response(200, json=tool_response())),
             image_generator=generator,
         )
-        conversations = Conversations(model)
+        conversations = make_conversation_service(model)
         bot = Mock(spec=Bot)
         bot.send = AsyncMock()
         try:
-            await handle_group(conversations, bot, event())
+            await handle_group(make_chat_handler(conversations), bot, event())
             bot.send.assert_awaited_once()
             expected = IMAGE_RATE_LIMIT_REPLY if code == "image_http_429" else IMAGE_FAILURE_REPLY
             assert str(bot.send.call_args.args[1]) == expected
-            group = conversations.groups["g"]
+            group = conversations.store.groups["g"]
             assert group.turns[-1]["role"] == "assistant"
             assert group.turns[-1]["content"] == expected
             assert "[图片]" not in group.turns[-1]["content"]
-            assert not group.lock.locked()
-            assert conversations.active == 0
+            assert not group.activity.lock.locked()
+            assert conversations.generation.active == 0
         finally:
-            await model.close()
+            await close_reply_engine(model)
 
     asyncio.run(run())
 
@@ -499,7 +507,7 @@ def test_image_generation_coexists_with_scoped_runtime_tools(mixed_batch):
             ),
             sandbox_transport=httpx.MockTransport(sandbox),
         )
-        model = ChatModel(
+        model = make_reply_engine(
             ModelSettings("http://localhost/v1", "key"),
             transport=httpx.MockTransport(chat),
             tools=runtime,
@@ -520,7 +528,7 @@ def test_image_generation_coexists_with_scoped_runtime_tools(mixed_batch):
                 assert invoked[0]["sender_id"] == context.sender_id
                 assert invoked[0]["message_id"] == context.message_id
         finally:
-            await model.close()
+            await close_reply_engine(model)
         assert runtime.sandbox and runtime.sandbox.is_closed
 
     asyncio.run(run())

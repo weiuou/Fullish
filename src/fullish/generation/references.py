@@ -1,8 +1,8 @@
 """Prepare bounded reference images for the static-image edit endpoint."""
 
-from fullish.animated_images import GifError, gif_preview
+from fullish.collection.parsers.image.formats import sniff_image_type
+from fullish.collection.parsers.image.gif import GifError, gif_preview
 from fullish.errors import ModelError
-from fullish.media import sniff_image_type
 
 MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 MAX_TOTAL_REFERENCE_BYTES = 20 * 1024 * 1024

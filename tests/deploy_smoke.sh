@@ -65,7 +65,7 @@ case "${1:-}" in
         inspect_container "$3"
         ;;
     exec)
-        if [[ ${4:-} == -m && ${5:-} == fullish.sandbox_check ]]; then
+        if [[ ${4:-} == -c && ${6:-} == fullish.sandbox.check ]]; then
             [[ ! -f $state/sandbox-postflight-fails ]] || exit 1
             exit 0
         fi
