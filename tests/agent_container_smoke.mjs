@@ -61,7 +61,7 @@ const pause = milliseconds => new Promise(resolve => setTimeout(resolve, millise
 function call(method, params) {
   const id = ++sequence;
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { pending.delete(id); reject(Error('RPC timeout')); }, 20_000);
+    const timeout = setTimeout(() => { pending.delete(id); reject(Error('RPC timeout')); }, method === 'visualize.probe' ? 150_000 : 20_000);
     pending.set(id, { resolve: result => { clearTimeout(timeout); resolve(result); },
                       reject: error => { clearTimeout(timeout); reject(error); } });
     connection.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
@@ -119,6 +119,11 @@ try {
   }
   assert.ok(catalog.some(item => item.name === 'fullish-visualize' && item.status === 'running'),
     JSON.stringify(catalog.map(item => ({ name: item.name, status: item.status }))));
+  const renderer = await call('visualize.probe', {});
+  assert.equal(renderer.protocol, 2);
+  assert.equal(renderer.execution, 'dim-plugin');
+  assert.equal(renderer.cases.filter(item => item.outcome === 'png').length, 3);
+  assert.equal(modelRequests, 0, 'direct renderer probe makes no model requests');
   const created = await call('session.create', { cwd: root, tools: ['fullish_reply'], interactive: false,
     permissionPolicy: { preset: 'read-only', allowedTools: ['fullish_reply'] }, systemPrompt: 'Synthetic integration fixture.' });
   sessionId = created.sessionId;
@@ -164,7 +169,7 @@ try {
     }
   } finally { observer.close(); }
   console.log(JSON.stringify({ linux_runtime: true, private_unix: true, native_plugin: true,
-    candidate_bridge: true, hidden_exec_refused: true, orphan_and_expired_stopped: true,
+    candidate_bridge: true, direct_renderer: true, hidden_exec_refused: true, orphan_and_expired_stopped: true,
     binary_sha256: createHash('sha256').update(await readFile(binary)).digest('hex'),
     model_requests: modelRequests + heldRequests, version: hello.serverVersion }));
   await call('daemon.shutdown', {});

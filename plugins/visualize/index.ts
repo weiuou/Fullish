@@ -1,10 +1,11 @@
 import { definePlugin } from '@arcships/rutis';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { renderPng, validateRender, probeRenderer } from './render-service.mjs';
 
 const guideNames = new Set(['overview', 'flowchart', 'data', 'layout']);
 
-async function invoke(call: any, name: string, cancelled: Promise<void>) {
+async function invoke(call: any, name: string, cancelled: Promise<void>, args = call.arguments) {
   const socketPath = process.env.FULLISH_AGENT_BRIDGE_SOCKET;
   const localUrl = process.env.FULLISH_AGENT_BRIDGE_URL;
   const token = process.env.FULLISH_AGENT_BRIDGE_TOKEN;
@@ -18,9 +19,10 @@ async function invoke(call: any, name: string, cancelled: Promise<void>) {
     }
     port = Number(url.port);
   }
-  const body = Buffer.from(JSON.stringify({ session_id: call.sessionId, name, arguments: call.arguments }));
+  const body = Buffer.from(JSON.stringify({ session_id: call.sessionId, name, arguments: args }));
   return await new Promise<any>((resolve, reject) => {
-    const request = http.request({ method: 'POST', path: '/invoke', socketPath,
+    const request = http.request({ method: 'POST',
+      path: name === 'visualize_complete' ? '/render-complete' : '/invoke', socketPath,
       ...(socketPath ? {} : { hostname: '127.0.0.1', port }),
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
         'Content-Length': body.length }, timeout: 35_000 }, response => {
@@ -60,7 +62,7 @@ const parts = definePlugin({
       return { content: text };
     });
     for (const definition of [
-      { name: 'visualize_render', description: 'Render SVG, Mermaid or HTML offline in this group sandbox. '
+      { name: 'visualize_render', description: 'Render SVG, Mermaid or HTML directly in the Dim plugin. '
         + 'Returns real pixels for inspection and an artifact ID; at most two renders per task.',
         parameters: { type: 'object', properties: {
           format: { type: 'string', enum: ['svg', 'mermaid', 'html'] },
@@ -79,16 +81,59 @@ const parts = definePlugin({
         source: 'extension', risk: definition.name === 'visualize_render' ? 'execute_process' : 'session',
         inputSchema: definition.parameters },
       async (call: any, cancelled: Promise<void>) => {
-        try { return await invoke(call, definition.name, cancelled); }
-        catch { return { content: 'fullish_bridge_failed', isError: true }; }
+        if (definition.name !== 'visualize_render') {
+          try { return await invoke(call, definition.name, cancelled); }
+          catch { return { content: 'fullish_bridge_failed', isError: true }; }
+        }
+        let ticket: string | undefined;
+        try {
+          const args = validateRender(call.arguments);
+          const grant = await invoke(call, 'visualize_begin', cancelled, {
+            format: args.format, width: args.width, height: args.height,
+            source_bytes: Buffer.byteLength(args.source),
+          });
+          if (grant.isError) return grant;
+          if (grant.protocol !== 2 || !/^[a-f0-9]{32}$/.test(grant.ticket)) throw Error('bridge_version');
+          ticket = grant.ticket;
+          const png = await renderPng(args, cancelled, async () => {
+            const check = await invoke(call, 'visualize_check', cancelled, { ticket });
+            if (check.isError || check.protocol !== 2) throw Error('bridge_rejected');
+          });
+          const result = await invoke(call, 'visualize_complete', cancelled,
+            { ticket, png: png.toString('base64') });
+          if (result.isError) return result;
+          return { ...result, content: [...result.content, { type: 'image', source: {
+            type: 'base64', mediaType: 'image/png', data: png.toString('base64'),
+          } }] };
+        } catch (error: any) {
+          const known = new Set(['dim_invalid_render', 'dim_render_failed', 'dim_render_cancelled', 'dim_render_timeout',
+            'dim_render_canvas_content_clipped', 'dim_render_external_resource_rejected',
+            'dim_render_chinese_font_missing', 'dim_render_renderer_dependency_failed',
+            'dim_render_image_too_large', 'dim_render_source_too_large', 'dim_render_canvas_limit',
+            'dim_render_cleanup_failed']);
+          const code = known.has(error?.message) ? error.message : 'dim_render_failed';
+          if (ticket) {
+            try { return await invoke(call, 'visualize_failed', cancelled, { ticket, error: code }); }
+            catch { /* Revoked or cancelled tasks cannot submit another result. */ }
+          }
+          return { content: [{ type: 'text', text: code }], isError: true };
+        }
       });
     }
   },
 });
 
 export default definePlugin({
-  name: 'FullishVisualize', inject: ['partRegistry'],
+  name: 'FullishVisualize', inject: ['partRegistry', 'managementMethods'],
   async apply(ctx: any) {
     await ctx.use('partRegistry').registerDefinition('session', 'FullishVisualizeTools', parts);
+    await ctx.use('managementMethods').register('visualize', [
+      { name: 'visualize.probe', mutating: false, interruption: 'report', progress: false },
+    ], async (call: any, cancelled: Promise<void>) => {
+      if (!call.params || typeof call.params !== 'object' || Array.isArray(call.params)
+          || Object.keys(call.params).length) return { code: 'invalid_params', message: 'Empty params required' };
+      try { return { kind: 'value', value: await probeRenderer(cancelled) }; }
+      catch { return { code: 'visualize_probe_failed', message: 'Direct renderer probe failed' }; }
+    });
   },
 });

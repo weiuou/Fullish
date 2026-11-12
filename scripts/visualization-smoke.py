@@ -67,6 +67,20 @@ def main() -> None:
             True,
         ),
         ("mermaid", 'flowchart LR\n A["群消息"] --> B["Dim"] --> C["绘图"] --> D["确认"]', True),
+        (
+            "svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="650" '
+            'viewBox="0 0 1000 650"><rect width="1000" height="650" fill="#e0f2fe"/>'
+            '<text x="40" y="100" font-size="32">完整画布</text></svg>',
+            True,
+        ),
+        (
+            "mermaid",
+            'flowchart TD\n A["收到请求"] --> B["检查权限"] --> C["准备上下文"] '
+            '--> D["推理"] --> E["调用工具"] --> F["生成图片"] --> G["检查结果"] '
+            '--> H["确认投递"]\n H -->|继续| C\n H -->|结束| I["完成"]',
+            True,
+        ),
         ("html", '<h1>离线绘图</h1><p style="font-size:28px">中文布局验收</p>', True),
         ("html", '<img src="https://example.invalid/not-allowed.png">', False),
         (

@@ -1,6 +1,6 @@
 {
   "name": "fullish-visualize",
-  "description": "Draw, inspect and revise offline diagrams through Fullish's authorized group sandbox",
-  "code": { "entry": "index.ts", "inject": ["partRegistry"] },
+  "description": "Render, inspect and revise diagrams directly in Dim, with Fullish-authorized image delivery",
+  "code": { "entry": "index.ts", "inject": ["partRegistry", "managementMethods"] },
   "skills": "skills"
 }

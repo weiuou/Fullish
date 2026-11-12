@@ -17,6 +17,7 @@ src/**/*.pyc
 !plugins/visualize/package.json
 !plugins/visualize/package-lock.json
 !plugins/visualize/index.ts
+!plugins/visualize/render-service.mjs
 !plugins/visualize/dim-plugin.json
 !plugins/visualize/defaults.json
 !plugins/visualize/guides/

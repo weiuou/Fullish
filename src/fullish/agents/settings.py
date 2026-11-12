@@ -46,9 +46,13 @@ class AgentSettings:
                 raise ValueError("DIM_ENDPOINT must be a private named pipe")
         elif not Path(endpoint).is_absolute():
             raise ValueError("DIM_ENDPOINT must be an absolute Unix socket path")
-        visualization = os.environ.get("SANDBOX_VISUALIZATION", "false").strip().lower()
+        visualization = (
+            os.environ.get("DIM_VISUALIZATION", os.environ.get("SANDBOX_VISUALIZATION", "false"))
+            .strip()
+            .lower()
+        )
         if visualization not in {"true", "false"}:
-            raise ValueError("SANDBOX_VISUALIZATION must be true or false")
+            raise ValueError("DIM_VISUALIZATION must be true or false")
         bridge_socket = os.environ.get("DIM_BRIDGE_SOCKET", "").strip()
         bridge_token = os.environ.get("DIM_BRIDGE_TOKEN_FILE", "").strip()
         if visualization == "true" and (
