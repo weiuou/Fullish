@@ -11,6 +11,10 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from fullish import __version__
+from fullish.agents.backend import AgentRouter, DimReplyModel
+from fullish.agents.bridge import AgentBridge, BridgeServer
+from fullish.agents.settings import AgentSettings
+from fullish.agents.store import RunStore
 from fullish.conversation.store import ConversationStore
 from fullish.generation.openai import OpenAIImageGenerator
 from fullish.management.groups import GroupManagement
@@ -48,6 +52,7 @@ from fullish.telemetry import emit
 def create_app() -> FastAPI:
     """Initialize the process-wide NoneBot driver once, without external credentials."""
     model_settings = ModelSettings.from_env()
+    agent_settings = AgentSettings.from_env()
     qq_settings = QQSettings.from_env()
     report_settings = DeploymentReportSettings.from_env()
     tool_settings = ToolSettings.from_env()
@@ -151,6 +156,30 @@ def create_app() -> FastAPI:
         if provider and reader
         else None
     )
+    agent_router = None
+    agent_runs = None
+    agent_bridge_server = None
+    if agent_settings:
+        if not model or not reader or not qq_settings:
+            raise ValueError("Dim routing requires the existing AI and QQ configuration")
+        agent_runs = RunStore(agent_settings.state_path, bot_id=qq_settings.app_id)
+        agent_runs.recover()
+        agent_runs.prune()
+        bridge = None
+        if agent_settings.visualization:
+            if not tools or not tools.sandbox:
+                raise ValueError("Visualize requires the existing sandbox configuration")
+            assert agent_settings.bridge_socket and agent_settings.bridge_token_file
+            bridge = AgentBridge(access, tools, enabled=True)
+            agent_bridge_server = BridgeServer(
+                bridge,
+                agent_settings.bridge_socket,
+                agent_settings.bridge_token_file,
+            )
+            resources.push_async_callback(agent_bridge_server.close)
+        dim = DimReplyModel(agent_settings, agent_runs, reader, access, bridge)
+        agent_router = AgentRouter(model, dim)
+        resources.push_async_callback(dim.close)
     for resource in (tools, image_generator, provider, reader):
         if resource is not None:
             resources.push_async_callback(resource.close)
@@ -181,18 +210,19 @@ def create_app() -> FastAPI:
         from fullish.platforms.qq.adapter import GroupOnlyAdapter, install_group_handler
 
         conversations = ConversationService(
-            model,
+            agent_router or model,
             store=ConversationStore(),
             access=access,
             generation=GenerationCoordinator(),
             observe=control.observe if control else None,
             postprocessor=postprocessor,
+            postprocess_when=agent_router.postprocess_allowed if agent_router else None,
         )
         sending = SendingService(access, confirmed=conversations.store.sent)
         queue = GroupMessageQueue()
         driver.register_adapter(GroupOnlyAdapter)
         install_group_handler(
-            ChatHandler(conversations, sending),
+            ChatHandler(conversations, sending, runs=agent_runs),
             developer=DeveloperMenu(control, mcp=mcp) if control else None,
             queue=queue,
         )
@@ -215,6 +245,8 @@ def create_app() -> FastAPI:
 
     @driver.on_startup
     async def mark_ready() -> None:
+        if agent_bridge_server:
+            await agent_bridge_server.start()
         app.state.ready = True
         emit("service.started", revision=revision, mode=mode)
 
@@ -266,6 +298,8 @@ def create_app() -> FastAPI:
     async def dependencies() -> dict[str, str | bool]:
         return {
             "model_configured": model is not None,
+            "agent_backend": "dim" if agent_settings and agent_settings.enabled else "legacy",
+            "sandbox_visualization_enabled": bool(agent_settings and agent_settings.visualization),
             "model": model_settings.model if model_settings else "",
             "fallback_model": model_settings.fallback_model if model_settings else "",
             "model_available": await provider.available() if provider else False,

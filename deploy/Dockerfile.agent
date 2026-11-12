@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS certificates
+FROM node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f
+# The native MCP HTTP client needs a system trust store even for API-key-only sessions.
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+WORKDIR /opt/fullish-agent
+COPY deploy/agent/package.json deploy/agent/package-lock.json ./
+RUN npm ci --ignore-scripts --omit=dev
+WORKDIR /opt/fullish-plugin
+COPY plugins/visualize/package.json plugins/visualize/package-lock.json ./
+RUN npm ci --ignore-scripts --omit=dev
+COPY plugins/visualize/index.ts plugins/visualize/dim-plugin.json plugins/visualize/defaults.json ./
+COPY plugins/visualize/guides ./guides
+COPY plugins/visualize/skills ./skills
+COPY deploy/agent/launch.mjs /opt/fullish-agent/launch.mjs
+COPY deploy/agent/control.mjs /opt/fullish-agent/control.mjs
+RUN groupadd --gid 10001 fullish-agent && useradd --uid 10001 --gid 10001 --no-create-home fullish-agent \
+    && mkdir -p /var/lib/fullish-agent /var/lib/fullish-agent-work /run/fullish-agent \
+    && chown 10001:10001 /var/lib/fullish-agent /var/lib/fullish-agent-work /run/fullish-agent \
+    && chmod 0700 /var/lib/fullish-agent /var/lib/fullish-agent-work /run/fullish-agent
+USER 10001:10001
+WORKDIR /var/lib/fullish-agent-work
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["node", "/opt/fullish-agent/launch.mjs", "--check"]
+ENTRYPOINT ["node", "/opt/fullish-agent/launch.mjs"]

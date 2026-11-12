@@ -1,0 +1,51 @@
+# Explicit companion override: docker compose -f compose.yaml -f compose.agent.yaml up -d
+services:
+  bot:
+    depends_on:
+      agent:
+        condition: service_healthy
+    environment:
+      DIM_ENDPOINT: /run/fullish-agent/rpc.sock
+      DIM_WORKSPACE_ROOT: /var/lib/fullish-agent-work
+      DIM_BRIDGE_SOCKET: /run/fullish-agent/bridge.sock
+      DIM_BRIDGE_TOKEN_FILE: /run/secrets/dim-bridge-token
+    volumes:
+      - agent-rpc:/run/fullish-agent
+      - agent-work:/var/lib/fullish-agent-work
+      - ./agent-secrets/bridge-token:/run/secrets/dim-bridge-token:ro
+
+  agent:
+    image: ${FULLISH_AGENT_IMAGE:?Set FULLISH_AGENT_IMAGE to the verified agent image digest}
+    init: true
+    restart: unless-stopped
+    # CPA stays on the host loopback. Dim opens no public HTTP/WebSocket listener.
+    network_mode: host
+    env_file:
+      - path: ./agent.env
+        format: raw
+    volumes:
+      - agent-rpc:/run/fullish-agent
+      - agent-work:/var/lib/fullish-agent-work
+      - agent-home:/var/lib/fullish-agent
+      - ./agent-secrets/model-key:/run/secrets/dim-model-key:ro
+      - ./agent-secrets/bridge-token:/run/secrets/dim-bridge-token:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  agent-rpc:
+  agent-work:
+  agent-home:

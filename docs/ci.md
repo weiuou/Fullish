@@ -16,6 +16,8 @@
 
 仅文档变更不会产生新镜像，也不会改变服务器上 `/version` 返回的构建提交号。
 
+完整 CI 还构建可选的 Dim runtime 和 visualization 沙箱目标。独立的 agent 任务使用真实固定版本 Dim、rutis 插件、私有 Unix RPC 与本地模拟模型验收；容器任务在真实 rootless gVisor 内验证中文 SVG、Mermaid、HTML、拒绝外部/文件子资源及浏览器清理。这些任务不调用付费模型或发送 QQ，不会在 PR 中发布或部署可选镜像。实现与证据边界见 [agent 接入指南](agent-runtime.md)。
+
 配置目标群并更新服务器部署脚本后，成功部署会触发 [QQ 部署汇报](deployment-reports.md)。汇报使用实际替换前后的镜像 revision；两次部署之间的文档提交也纳入摘要，不单独为文档变更发部署通知。
 
 自动更新流程图由内置 ImageGen 生成，原始提示词保存在 [图片说明](assets/deployment-flow.prompt.md)。部署细节见 [SSH 部署](deployment-ssh.md) 或 [TAT 部署](deployment.md)。

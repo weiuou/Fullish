@@ -1,0 +1,4 @@
+{
+  "plugins": { "fullish-visualize": "/opt/fullish-plugin" },
+  "locked": ["PluginManager", "Rpc", "Transport"]
+}

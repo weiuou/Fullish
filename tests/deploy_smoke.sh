@@ -65,6 +65,10 @@ case "${1:-}" in
         inspect_container "$3"
         ;;
     exec)
+        if [[ ${4:-} == -m && ${5:-} == fullish.agents.check ]]; then
+            [[ ! -f $state/agent-postflight-fails ]] || exit 1
+            exit 0
+        fi
         if [[ ${4:-} == -c && ${6:-} == fullish.sandbox.check ]]; then
             [[ ! -f $state/sandbox-postflight-fails ]] || exit 1
             exit 0
@@ -84,7 +88,12 @@ case "${1:-}" in
         shift
         case "$action" in
             config) [[ ${1:-} == --quiet ]] || exit 2 ;;
-            run) [[ ! -f $state/sandbox-preflight-fails ]] || exit 1 ;;
+            run)
+                [[ ! -f $state/sandbox-preflight-fails ]] || exit 1
+                if [[ " $* " == *' fullish.agents.check '* ]]; then
+                    [[ ! -f $state/agent-preflight-fails ]] || exit 1
+                fi
+                ;;
             ps)
                 if [[ -f $state/container-image ]]; then
                     if [[ " $* " == *' --all '* || $(< "$state/container-running") == true ]]; then
@@ -433,6 +442,55 @@ run_deploy "$image_b"
 assert_success
 assert_state "$image_b" "$image_a"
 assert_running "$image_b"
+pass
+
+new_case agent_missing_override_keeps_healthy_sender
+seed_release "$image_a"
+printf 'AGENT_BACKEND=dim\n' > "$FULLISH_ROOT/runtime.env"
+run_deploy "$image_b"
+assert_failure
+assert_running "$image_a"
+assert_no_stop
+pass
+
+new_case agent_preflight_failure_keeps_healthy_sender
+seed_release "$image_a"
+printf 'AGENT_BACKEND=dim\n' > "$FULLISH_ROOT/runtime.env"
+printf 'services: {}\n' > "$FULLISH_ROOT/compose.agent.yaml"
+printf '%s\n' "$image_c" > "$FULLISH_ROOT/agent-image"
+touch "$FAKE_DOCKER_STATE/agent-preflight-fails"
+run_deploy "$image_b"
+assert_failure
+assert_state "$image_a" ''
+assert_running "$image_a"
+assert_no_stop
+pass
+
+new_case agent_postflight_failure_restores_previous_image
+seed_release "$image_a"
+printf 'AGENT_BACKEND=dim\n' > "$FULLISH_ROOT/runtime.env"
+printf 'services: {}\n' > "$FULLISH_ROOT/compose.agent.yaml"
+printf '%s\n' "$image_c" > "$FULLISH_ROOT/agent-image"
+touch "$FAKE_DOCKER_STATE/agent-postflight-fails"
+run_deploy "$image_b"
+assert_failure
+assert_state "$image_a" ''
+assert_running "$image_a"
+[[ ! -f $FAKE_DOCKER_STATE/report-calls.log ]] || fail 'failed agent release reported success'
+pass
+
+new_case accepted_agent_uses_override_and_both_gates
+seed_release "$image_a"
+printf 'AGENT_BACKEND=dim\n' > "$FULLISH_ROOT/runtime.env"
+printf 'services: {}\n' > "$FULLISH_ROOT/compose.agent.yaml"
+printf '%s\n' "$image_c" > "$FULLISH_ROOT/agent-image"
+run_deploy "$image_b"
+assert_success
+assert_state "$image_b" "$image_a"
+assert_running "$image_b"
+grep -q -- "--file $FULLISH_ROOT/compose.agent.yaml" "$FAKE_DOCKER_STATE/calls.log" || fail 'agent override omitted'
+grep -q -- 'fullish.agents.check --preflight' "$FAKE_DOCKER_STATE/calls.log" || fail 'agent preflight omitted'
+grep -q -- 'exec fake-fullish-bot python -m fullish.agents.check' "$FAKE_DOCKER_STATE/calls.log" || fail 'agent postflight omitted'
 pass
 
 printf 'All %s deployment transaction scenarios passed.\n' "$case_count"

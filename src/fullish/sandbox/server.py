@@ -64,6 +64,19 @@ class Sandboxes:
     def groups(self) -> frozenset[str]:
         return self.policies.sandbox_groups() if self.policies else self.legacy_groups
 
+    @property
+    def limits(self) -> tuple[int, int]:
+        profiles = [
+            item.split("=", 1)[1]
+            for item in self.image_env or []
+            if item.startswith("FULLISH_SANDBOX_PROFILE=")
+        ]
+        if not profiles or profiles == ["standard"]:
+            return 512 * 1024 * 1024, 64
+        if profiles == ["visualization"]:
+            return 1024 * 1024 * 1024, 128
+        raise SandboxError("unknown_image_resource_profile")
+
     def reconcile(self) -> None:
         if not self.policies:
             return
@@ -180,6 +193,7 @@ class Sandboxes:
             raise SandboxError("verified_systemd_runtime_adapter_required")
         image = json.loads(self.docker(["image", "inspect", self.image]))[0]
         self.image_env = image["Config"].get("Env") or []
+        _ = self.limits  # Reject unsupported profiles before creating a container.
 
     def valid(self, container: dict) -> bool:
         host = container["HostConfig"]
@@ -193,10 +207,10 @@ class Sandboxes:
             and host.get("NetworkMode") == "none"
             and host.get("ReadonlyRootfs")
             and not host.get("Privileged")
-            and host.get("Memory") == 512 * 1024 * 1024
-            and host.get("MemorySwap") == 512 * 1024 * 1024
+            and host.get("Memory") == self.limits[0]
+            and host.get("MemorySwap") == self.limits[0]
             and host.get("NanoCpus") == 1_000_000_000
-            and host.get("PidsLimit") == 64
+            and host.get("PidsLimit") == self.limits[1]
             and host.get("CapDrop") == ["ALL"]
             and not host.get("CapAdd")
             and "no-new-privileges" in ":".join(host.get("SecurityOpt") or [])
@@ -235,9 +249,9 @@ class Sandboxes:
             return (
                 int(quota) == int(period)
                 and int(period) > 0
-                and int((directory / "memory.max").read_text()) == 512 * 1024 * 1024
+                and int((directory / "memory.max").read_text()) == self.limits[0]
                 and int((directory / "memory.swap.max").read_text()) == 0
-                and int((directory / "pids.max").read_text()) == 64
+                and int((directory / "pids.max").read_text()) == self.limits[1]
             )
         except (OSError, ValueError, KeyError, StopIteration):
             return False
@@ -265,10 +279,10 @@ class Sandboxes:
                 "--user=10001:10001",
                 "--cap-drop=ALL",
                 "--security-opt=no-new-privileges:true",
-                "--memory=512m",
-                "--memory-swap=512m",
+                f"--memory={self.limits[0]}",
+                f"--memory-swap={self.limits[0]}",
                 "--cpus=1",
-                "--pids-limit=64",
+                f"--pids-limit={self.limits[1]}",
                 "--restart=no",
                 "--log-driver=none",
                 "--tmpfs=/workspace:" + WORKSPACE_OPTIONS,

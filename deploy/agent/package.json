@@ -1,0 +1,7 @@
+{
+  "name": "fullish-agent-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": { "dimcode-alpha": "0.1.0-alpha.20" }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "fullish-visualize-renderer",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "engines": { "node": ">=24.13.0" },
+  "dependencies": {
+    "mermaid": "12.3.0",
+    "playwright-core": "1.65.0"
+  },
+  "scripts": { "test": "node --test render.test.mjs" }
+}

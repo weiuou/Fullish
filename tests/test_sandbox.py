@@ -134,6 +134,21 @@ def test_container_with_injected_credentials_is_rejected(broker):
     assert not broker.valid(item)
 
 
+def test_visualization_requires_a_known_image_profile_and_exact_limits(broker):
+    broker.image_env = ["PATH=/usr/bin", "FULLISH_SANDBOX_PROFILE=visualization"]
+    item = container(broker)
+    item["Config"]["Env"] = list(broker.image_env)
+    item["HostConfig"].update(
+        Memory=1024 * 1024 * 1024, MemorySwap=1024 * 1024 * 1024, PidsLimit=128
+    )
+    assert broker.valid(item)
+    item["HostConfig"]["PidsLimit"] = 64
+    assert not broker.valid(item)
+    broker.image_env = ["FULLISH_SANDBOX_PROFILE=unbounded"]
+    with pytest.raises(SandboxError, match="unknown_image_resource_profile"):
+        _ = broker.limits
+
+
 def test_reuse_does_not_launch_a_new_container_and_group_names_are_scoped(broker):
     broker.image_env = ["PATH=/usr/bin"]
     broker.docker = Mock(return_value=json.dumps([container(broker)]))

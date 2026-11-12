@@ -35,6 +35,13 @@ repository=$(< "$root/image-repository")
 [[ -z $current || ${current%@sha256:*} == "$repository" ]] || die 'Current image repository differs from host configuration.'
 export FULLISH_IMAGE="$target"
 compose=(docker compose --project-name fullish --file "$root/compose.yaml")
+if [[ -f $root/compose.agent.yaml ]]; then
+    [[ -f $root/agent-image ]] || die 'Agent override requires a reviewed agent-image digest file.'
+    FULLISH_AGENT_IMAGE=$(< "$root/agent-image")
+    valid_image "$FULLISH_AGENT_IMAGE" || die 'Agent runtime requires an immutable image digest.'
+    export FULLISH_AGENT_IMAGE
+    compose+=(--file "$root/compose.agent.yaml")
+fi
 "${compose[@]}" config --quiet
 
 apply_started=0
@@ -114,6 +121,11 @@ wallet_enabled() {
 if wallet_enabled; then
     timeout 90 "${compose[@]}" run --rm --no-deps --pull never bot python -c "$module_runner" fullish.wallet.check fullish.wallet_check
 fi
+agent_enabled() { grep -Eq '^AGENT_BACKEND=dim[[:space:]]*$' "$root/runtime.env"; }
+if agent_enabled; then
+    [[ -f $root/compose.agent.yaml ]] || die 'Dim requires the explicitly installed agent override.'
+    timeout 180 "${compose[@]}" run --rm --no-deps --pull never bot python -m fullish.agents.check --preflight
+fi
 apply_started=1
 # Single active sender: stop old application before starting its replacement.
 timeout 45 "${compose[@]}" stop --timeout 30 bot
@@ -127,6 +139,9 @@ if sandbox_enabled; then
 fi
 if wallet_enabled; then
     timeout 90 docker exec "$container" python -c "$module_runner" fullish.wallet.check fullish.wallet_check
+fi
+if agent_enabled; then
+    timeout 180 docker exec "$container" python -m fullish.agents.check
 fi
 
 if [[ $current != "$target" ]]; then previous=$current; fi
