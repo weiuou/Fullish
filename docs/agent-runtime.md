@@ -1,6 +1,6 @@
 # Dim 与 visualize 接入及验证
 
-状态：首版已实现并通过隔离环境验收，尚未上线或完成生产验收。日期：2026-11-12。设计与后续范围见 [开发路径](agent-runtime-plan.md)，接口与存储设计记录于 [Issue #43](https://github.com/weiuou/Fullish/issues/43)，绘图需求见 [Issue #42](https://github.com/weiuou/Fullish/issues/42)。
+状态：首版已合并部署，进入显式单群试运行。日期：2026-11-12。设计与后续范围见 [开发路径](agent-runtime-plan.md)，接口与存储设计记录于 [Issue #43](https://github.com/weiuou/Fullish/issues/43)，绘图需求见 [Issue #42](https://github.com/weiuou/Fullish/issues/42)。
 
 ## 已实现的接入结构
 
@@ -25,9 +25,22 @@ Fullish 的任务时限为 90 秒，桥接最多 12 次调用、2 次渲染。�
 | Linux Dim 容器 | 已通过本地探针与 CI | 真实 alpha.20、私有 Unix RPC、插件、候选登记、隐藏 exec 拒绝；本地还验证超时/断开控制端会话停止；断网、只读根目录、512 MiB/128 PIDs |
 | 渲染容器及 rootless gVisor | 独立渲染与完整链路均已通过 | [真实 rootless 检查](https://github.com/weiuou/Fullish/actions/runs/43199980883/job/131121089720) 验证 1 GiB/128 PIDs、三种中文图、拒绝外部/文件资源和溢出、浏览器清理；同次场景使用真实 Dim、私有 Unix 桥接和 broker，模型收到两次真实 PNG，模拟 QQ 确认后仅记一条历史 |
 | 发布前后探针 | 已通过隔离环境验收 | 同一 [完整链路检查](https://github.com/weiuou/Fullish/actions/runs/43199980883/job/131121089720) 执行真实 preflight/postflight，确认不增加模型调用或 QQ 发送；部署事务另覆盖门禁失败和回滚 |
-| 实际模型质量与 QQ 实群 | 待完成 | 当前模型和 QQ 使用合成外部边界 |
+| 实际模型与 QQ 受控验收 | 已通过一次真实试验 | 真实 `gpt-6-luna`、Dim、私有桥接、gVisor 两次渲染及 QQ 图文回执；以部署验收输入进入真实内部服务，经已授权群的主动通知出口发送 |
+| 实群持续观察 | 单群试运行中 | 继续观察正常群消息触发、排版、费用、耗时及并发余量；一次受控验收不代表长期稳定性 |
 
 验收版本源码为 `d3910d14999119c37d61d5d52139dfa29b81eab3`。Windows x64 二进制 SHA-256 为 `d5bda3496bd6782f574ae7446158c16731829d32e8bfb63fab150f48ea544d25`；Linux x64 为 `93da59c424cdc421a9079d38478c817e6226376eabdea23418140c3cbe042c3c`，见 [Linux 原生 runtime 与启动器验收](https://github.com/weiuou/Fullish/actions/runs/43198230644/job/131114976890)。摘要按平台分别记录，不能跨平台沿用。
+
+### 2026-11-12 单群试运行记录
+
+[PR #44](https://github.com/weiuou/Fullish/pull/44) 合并为 `915e712115fa38340b882de0b4e353774d67d3cc`，经 [主分支发布流程](https://github.com/weiuou/Fullish/actions/runs/43217958149) 部署。仅将既有部署汇报群列入 `DIM_ALLOWED_GROUPS`；群策略已允许聊天、图片和沙箱，未增加其他群授权。
+
+专用 companion 使用 `gpt-6-luna`。首次使用既有 `gemini-3.8-flash-high` 的完整绘图试验达到 90 秒上限后停止，未发送 QQ，检查确认没有活跃 session 残留；随后用已有备用模型进行独立的受控试验。模型配置与旧后端独立，90 秒预算继续生效。
+
+成功试验使用明确标记的部署验收输入，经 `ConversationService`、真实 Dim/插件和实际沙箱生成中文流程图，进行一次配色修正，再经 `SendingService` 和真实 QQ 主动通知回执确认。共 5 次模型请求、2 次渲染，至 QQ 确认约 70.6 秒；只在确认后记录一条回复历史。输出为 1200 × 440 PNG，14925 字节，SHA-256 为 `7939cce679cf70cdb678d44dca3e7cb05f6064678d461772c559363b252fedd9`。这项试验未伪造 QQ 入站事件；正常群聊触发与持续质量仍属试运行观察。
+
+![真实 Dim 与 QQ 受控验收生成的中文流程图](assets/visualize-live.png)
+
+部署主镜像为 `ghcr.io/weiuou/fullish@sha256:90618f9de84113fc3c599205cfa38a39fb66b77ab4a615851d3b18c459ebae3a`。专用镜像在服务器从同一固定源码构建并按摘要使用：agent 为 `fullish.local/agent@sha256:6760ce2fe965c9a1ce8f2291d85f67bf768c37365089e76cd907aca581a264fc`，可视化 worker 为 `sha256:224cd5b803e7ac053a917fb18322243e59f7f5a2881c5e7664982b43daa0dda0`。`fullish.local` 为本机镜像命名，不能从外部仓库拉取；后续维护须保留本机镜像及固定源码，或先发布到可用仓库再更换摘要。源文件、运维备份和安全验收元数据保存在服务器私有 rollout 目录，凭证与群标识不进入仓库。
 
 ## 本地开发与探针
 
@@ -52,9 +65,9 @@ cd plugins/visualize/renderer
 FULLISH_CHROMIUM=/absolute/path/to/chromium node --test render.test.mjs
 ```
 
-## 拟上线配置
+## 部署与试运行配置
 
-以下文件和命令已通过隔离环境检查；上线前仍须在目标机器核对资源余量、私有挂载与已授权测试群，并完成真实模型及 QQ 的受控试运行。
+以下文件和命令已通过隔离环境检查及首次单群部署；每次换目标机器或镜像，仍须核对资源余量、私有挂载、群授权和真实模型及 QQ 行为。
 
 ```sh
 docker build -f deploy/Dockerfile.agent -t fullish-agent:local .
@@ -85,7 +98,7 @@ SANDBOX_VISUALIZATION=true
 
 启用 Dim 时，发布在停止旧 bot 前运行 `python -m fullish.agents.check --preflight`，新 bot 启动后再次执行不带参数的检查。它验证固定版本、插件状态和已授权群的 SVG/Mermaid/HTML 真实沙箱 PNG 取回；后置检查还验证私有桥接拒绝未绑定 session。检查不调用模型或 QQ。失败会阻止替换或触发原有回滚，不记录健康发布。没有授权绘图的群时明确报告零次绘图检查，不能把该结果当作该群已获绘图能力。
 
-Dim 的 home 会持久化 Timeline；任务结束会请求关闭并删除对应 session，但不能把该动作当作整个状态卷的安全擦除。实群前仍须确认发行版本的附件/数据库保留行为和运维清理规则，不将生产群聊写进开发者个人 Dim home。
+Dim 的 home 会持久化 Timeline；试运行使用独立私有状态卷，每次任务结束请求关闭并删除对应 session，该动作不等于整个状态卷的安全擦除。扩大开放前仍须固定附件、数据库和备份的保留期限与运维清理规则；不将群聊写进开发者个人 Dim home。
 
 ## 停用与恢复边界
 
