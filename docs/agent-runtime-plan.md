@@ -1,6 +1,6 @@
 # Dim agent 与 visualize 插件开发路径
 
-状态：开发设计，正在实现。日期：2026-11-12。Fullish 核对基线：`989f920`；本机 Dim 包：`dimcode-alpha@0.1.0-alpha.20`。当前实现和分层验收见 [接入与验证](agent-runtime.md)，不代表生产已启用这些能力。
+状态：开发设计；P0–P4 首版已实现并通过隔离环境验收，P5 实群试运行尚未开始。日期：2026-11-12。Fullish 核对基线：`989f920`；Dim 包：`dimcode-alpha@0.1.0-alpha.20`。当前实现和分层验收见 [接入与验证](agent-runtime.md)，不代表生产已启用这些能力。
 
 ## 目标与首个交付
 
@@ -10,9 +10,9 @@ Fullish 继续负责 QQ 群聊产品行为，接入 Dim 作为可替换的 agent
 
 后续按照“其他获授权工具 → 持续会话 → 后台任务”的依赖推进。一次性固定文字提醒保留为独立工作流，不依赖 Dim，见 [主动消息设计](proactive-messaging.md)。
 
-## 当前已有与待增加
+## 基线能力与设计增量
 
-| 部分 | 当前代码 | 本方案增加的内容 |
+| 部分 | 基线代码（`989f920`） | 本方案增加的内容 |
 | --- | --- | --- |
 | 回复后端 | [ReplyModel](../src/fullish/reply/schema.py) 接收上下文与可信 ToolContext，返回回复候选 | Dim 适配器、版本探测和后端选择 |
 | 群聊上下文 | [ConversationStore](../src/fullish/conversation/store.py) 保存有界快照，普通消息只提供上下文 | 第一版沿用快照；持续会话阶段再增加增量输入合同 |
@@ -20,7 +20,7 @@ Fullish 继续负责 QQ 群聊产品行为，接入 Dim 作为可替换的 agent
 | 工具执行 | [ToolRuntime](../src/fullish/tools/runtime.py) 负责授权、限流及 MCP/钱包调用 | 按运行授权的工具桥接，复用原执行入口 |
 | 图片产物 | [ImageAssets](../src/fullish/media/assets.py) 管理每轮图片 | 从渲染结果安全导入，交给模型查看和 Fullish 发送 |
 | 沙箱 | 群独立的 Rootless Docker/gVisor，已有执行与图片传输 | 可选渲染镜像、固定 CLI、字体、离线依赖与探针 |
-| 插件 | Fullish 尚无 Dim 插件 | visualize 的工具入口、绘图指南、主题和示例 |
+| 插件 | 基线尚无 Dim 插件 | visualize 的工具入口、绘图指南、主题和示例 |
 
 ## 架构与职责
 
@@ -104,7 +104,7 @@ Dim 使用专用 home、工作目录和系统身份/容器，与个人 dima 会�
 
 ## visualize 插件的交付形态
 
-以下为拟议目录，实施前根据固定版本插件合同确定；不表示目录已存在。
+以下保留设计时的目录划分，实际已实现的文件与验证命令见 [接入指南](agent-runtime.md)。`assets/` 仍为后续静态资源的扩展位置。
 
 ```text
 src/fullish/agents/             后端适配、协议、运行授权、结果与生命周期

@@ -188,6 +188,23 @@ async def exercise_plugin(
 
         def respond(request: dict) -> dict:
             if not request.get("tools"):
+                # Follow an incompatible final-tool instruction if one leaks into a text-only
+                # session, so the real native provider will reject the unoffered call.
+                prompt = json.dumps(request.get("messages", []), ensure_ascii=False)
+                if "最后用 fullish_reply 登记候选" in prompt:
+                    return {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "unoffered-final",
+                                "type": "function",
+                                "function": {
+                                    "name": "fullish_reply",
+                                    "arguments": json.dumps({"text": FIXTURE_TEXT}),
+                                },
+                            }
+                        ],
+                    }
                 return {"role": "assistant", "content": FIXTURE_TEXT}
             completed_calls = [
                 message.get("tool_call_id", "")
@@ -296,6 +313,17 @@ async def exercise_plugin(
                 "DIM_BRIDGE_TOKEN_FILE": str(private_root / "token"),
             }
         try:
+            text_model = DimReplyModel(settings, model.store, reader, access)
+            try:
+                text_reply = await text_model.reply(
+                    [{"role": "user", "content": "Synthetic text-only backend input."}],
+                    addressed=True,
+                    context=ToolContext(group, "fixture-member", "text-only"),
+                )
+                if text_reply != FIXTURE_TEXT:
+                    raise RuntimeError("Text-only backend did not produce final native text")
+            finally:
+                await text_model.close()
             if sandbox_group:
                 before = len(ModelFixture.requests)
                 with patch.dict(os.environ, deployment_env):
@@ -353,6 +381,7 @@ async def exercise_plugin(
                 raise RuntimeError("The effective native tool allowlist was not enforced")
             return {
                 "native_plugin": True,
+                "text_only_backend": True,
                 "candidate_bridge": True,
                 "tool_allowlist": True,
                 "model_requests": len(requests),

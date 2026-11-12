@@ -1,6 +1,6 @@
 # Dim 与 visualize 接入及验证
 
-状态：功能开发中，尚未完成生产验收。日期：2026-11-12。设计与后续范围见 [开发路径](agent-runtime-plan.md)，接口与存储设计记录于 [Issue #43](https://github.com/weiuou/Fullish/issues/43)，绘图需求见 [Issue #42](https://github.com/weiuou/Fullish/issues/42)。
+状态：首版已实现并通过隔离环境验收，尚未上线或完成生产验收。日期：2026-11-12。设计与后续范围见 [开发路径](agent-runtime-plan.md)，接口与存储设计记录于 [Issue #43](https://github.com/weiuou/Fullish/issues/43)，绘图需求见 [Issue #42](https://github.com/weiuou/Fullish/issues/42)。
 
 ## 已实现的接入结构
 
@@ -23,7 +23,8 @@ Fullish 的任务时限为 90 秒，桥接最多 12 次调用、2 次渲染。�
 | 完整渲染与修正 | 已通过本地探针 | 真实 Dim/插件/浏览器，两次渲染；真实 PNG 到达模型请求，最终字节回到 Fullish；broker 为外部模拟边界 |
 | 群聊与投递语义 | 已有模拟回放 | 确认后记历史、撤权、重启去重、取消与跨会话产物拒绝 |
 | Linux Dim 容器 | 已通过本地探针与 CI | 真实 alpha.20、私有 Unix RPC、插件、候选登记、隐藏 exec 拒绝；本地还验证超时/断开控制端会话停止；断网、只读根目录、512 MiB/128 PIDs |
-| 渲染容器及 rootless gVisor | 独立渲染已通过；整链仍待验收 | [真实 rootless 检查](https://github.com/weiuou/Fullish/actions/runs/43198230644/job/131114976857) 验证 1 GiB/128 PIDs、三种中文图、拒绝外部/文件资源和溢出、浏览器清理；后续整链因合成群未授予图片权限失败 |
+| 渲染容器及 rootless gVisor | 独立渲染与完整链路均已通过 | [真实 rootless 检查](https://github.com/weiuou/Fullish/actions/runs/43199980883/job/131121089720) 验证 1 GiB/128 PIDs、三种中文图、拒绝外部/文件资源和溢出、浏览器清理；同次场景使用真实 Dim、私有 Unix 桥接和 broker，模型收到两次真实 PNG，模拟 QQ 确认后仅记一条历史 |
+| 发布前后探针 | 已通过隔离环境验收 | 同一 [完整链路检查](https://github.com/weiuou/Fullish/actions/runs/43199980883/job/131121089720) 执行真实 preflight/postflight，确认不增加模型调用或 QQ 发送；部署事务另覆盖门禁失败和回滚 |
 | 实际模型质量与 QQ 实群 | 待完成 | 当前模型和 QQ 使用合成外部边界 |
 
 验收版本源码为 `d3910d14999119c37d61d5d52139dfa29b81eab3`。Windows x64 二进制 SHA-256 为 `d5bda3496bd6782f574ae7446158c16731829d32e8bfb63fab150f48ea544d25`；Linux x64 为 `93da59c424cdc421a9079d38478c817e6226376eabdea23418140c3cbe042c3c`，见 [Linux 原生 runtime 与启动器验收](https://github.com/weiuou/Fullish/actions/runs/43198230644/job/131114976890)。摘要按平台分别记录，不能跨平台沿用。
@@ -53,7 +54,7 @@ FULLISH_CHROMIUM=/absolute/path/to/chromium node --test render.test.mjs
 
 ## 拟上线配置
 
-以下文件和命令用于准备后续验收；完成真实沙箱和部署检查后才能作为上线依据。
+以下文件和命令已通过隔离环境检查；上线前仍须在目标机器核对资源余量、私有挂载与已授权测试群，并完成真实模型及 QQ 的受控试运行。
 
 ```sh
 docker build -f deploy/Dockerfile.agent -t fullish-agent:local .
@@ -62,7 +63,7 @@ docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sand
 
 普通沙箱仍是默认构建目标。渲染镜像预装 Node、Chromium、中文字体、Mermaid 和 Playwright，运行时断网；源文件与输出有大小、像素、路径及时间限制。HTML/SVG 的页面脚本关闭，Mermaid 使用受限 DSL 和严格模式，远程与文件子资源被拒绝。
 
-渲染镜像声明独立的资源配置：1 核、1 GiB 内存、128 PIDs、无 swap；普通镜像仍为 512 MiB/64 PIDs。Chromium 保留正常进程模型与内层沙箱，Linux CLI 只接受 Fullish worker 的 PID 命名空间。broker 从维护者指定的固定镜像读取配置，同时检查 Docker 和真实宿主机 cgroup；群消息不能扩大限制。该配置已通过独立的真实 gVisor 渲染检查，完整 agent/部署链仍须单独验收。
+渲染镜像声明独立的资源配置：1 核、1 GiB 内存、128 PIDs、无 swap；普通镜像仍为 512 MiB/64 PIDs。Chromium 保留正常进程模型与内层沙箱，Linux CLI 只接受 Fullish worker 的 PID 命名空间。broker 从维护者指定的固定镜像读取配置，同时检查 Docker 和真实宿主机 cgroup；群消息不能扩大限制。该配置、完整 agent 链路及发布前后探针均已通过上述真实 gVisor 检查。
 
 切换渲染镜像前，先安装本分支的 `scripts/sandbox-runtime-setup.sh` 所用 OCI 适配器与 `scripts/sandbox-setup.sh` 所用 broker，再按原流程安装新的沙箱镜像 digest。旧适配器不能承载新增配置；应保持部署门禁失败并继续原 sender，不临时放开限制。部署前测量 bot、CPA、Dim 与最多两组沙箱的共同峰值，单个渲染任务仍按 90 秒交互预算运行。
 
