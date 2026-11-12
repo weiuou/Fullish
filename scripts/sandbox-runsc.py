@@ -5,6 +5,7 @@ Installed beside a pinned complete gVisor distribution. Never use against the
 production Docker daemon. No commands, OCI specs or environment values are logged.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -43,6 +44,26 @@ def main() -> int:
     }
     unit = f"fullish-sandbox-runtime-{identifier}.service"
     if operation == "create":
+        bundle = next(
+            (arg.split("=", 1)[1] for arg in arguments if arg.startswith("--bundle=")),
+            None,
+        )
+        if bundle is None and "--bundle" in arguments:
+            bundle = arguments[arguments.index("--bundle") + 1]
+        config = json.loads(
+            (Path(bundle) if bundle else Path.cwd()).joinpath("config.json").read_text()
+        )
+        profiles = [
+            value.split("=", 1)[1]
+            for value in config.get("process", {}).get("env", [])
+            if value.startswith("FULLISH_SANDBOX_PROFILE=")
+        ]
+        if not profiles or profiles == ["standard"]:
+            memory, pids = "512M", 64
+        elif profiles == ["visualization"]:
+            memory, pids = "1G", 128
+        else:
+            raise ValueError("unknown_image_resource_profile")
         subprocess.run(
             [
                 "/usr/bin/systemd-run",
@@ -52,9 +73,9 @@ def main() -> int:
                 "--unit=" + unit,
                 "--property=CPUQuota=100%",
                 "--property=CPUQuotaPeriodSec=100ms",
-                "--property=MemoryMax=512M",
+                f"--property=MemoryMax={memory}",
                 "--property=MemorySwapMax=0",
-                "--property=TasksMax=64",
+                f"--property=TasksMax={pids}",
                 "--property=BindsTo=docker.service",
                 "/usr/bin/sleep",
                 "infinity",
@@ -72,9 +93,12 @@ def main() -> int:
         quota, period = (directory / "cpu.max").read_text().split()
         if not (
             int(quota) == int(period) > 0
-            and int((directory / "memory.max").read_text()) == 512 * 1024 * 1024
+            and (
+                int((directory / "memory.max").read_text()),
+                int((directory / "pids.max").read_text()),
+            )
+            in {(512 * 1024 * 1024, 64), (1024 * 1024 * 1024, 128)}
             and int((directory / "memory.swap.max").read_text()) == 0
-            and int((directory / "pids.max").read_text()) == 64
         ):
             raise ValueError("runtime_limits_not_enforced")
         (directory / "cgroup.procs").write_text(str(os.getpid()))

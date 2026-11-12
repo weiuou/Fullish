@@ -61,6 +61,18 @@ def test_bridge_keeps_artifacts_scoped_and_never_sends_qq():
             ) as client:
                 assert (await client.post("/invoke", json={})).status_code == 403
                 headers = {"Authorization": "Bearer " + TOKEN}
+                malformed = (
+                    await client.post(
+                        "/invoke",
+                        headers=headers,
+                        json={
+                            "session_id": "session-a",
+                            "name": "visualize_render",
+                            "arguments": {"format": {}, "source": "<svg/>"},
+                        },
+                    )
+                ).json()
+                assert malformed["isError"] and not files and not commands
                 source = '<svg><text>"; touch /tmp/not-a-command</text></svg>'
                 rendered = (
                     await client.post(

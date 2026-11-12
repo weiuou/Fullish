@@ -42,6 +42,10 @@ export async function render({ root = '/workspace', input, output, format, width
   const source = await readFile(sourcePath, 'utf8');
   if (!source.trim() || Buffer.byteLength(source) > MAX_SOURCE) throw Error('source_too_large');
   if (process.platform === 'linux') {
+    const namespace = await readFile('/proc/1/cmdline', 'utf8');
+    if (namespace !== 'python3\0-I\0/opt/fullish/worker.py\0--idle\0') {
+      throw Error('sandbox_worker_required');
+    }
     try {
       const { stdout } = await promisify(execFile)('/usr/bin/fc-match',
         ['--format=%{family}', 'Noto Sans CJK SC'], { timeout: 3000 });
@@ -50,8 +54,10 @@ export async function render({ root = '/workspace', input, output, format, width
   }
   const instance = await chromium.launch({
     executablePath: browser, headless: true, chromiumSandbox: true,
-    // No --no-sandbox/--single-process/privileged fallback. Deployment must pass real gVisor QA.
-    args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
+    // The optional image has a bounded resource profile; keep Chromium's inner sandbox.
+    args: ['--disable-background-networking', '--disable-component-update', '--disable-sync',
+      '--disable-gpu', '--in-process-gpu', '--renderer-process-limit=1', '--num-raster-threads=1',
+      '--disable-crash-reporter', '--js-flags=--max-old-space-size=96'],
     timeout: 10_000,
   });
   try {

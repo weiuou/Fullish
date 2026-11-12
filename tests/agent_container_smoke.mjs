@@ -2,12 +2,12 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { mkdtemp, mkdir, writeFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { connectControl, stopExpiredSessions } from '../deploy/agent/control.mjs';
 
 assert.equal(process.platform, 'linux');
@@ -165,6 +165,7 @@ try {
   } finally { observer.close(); }
   console.log(JSON.stringify({ linux_runtime: true, private_unix: true, native_plugin: true,
     candidate_bridge: true, hidden_exec_refused: true, orphan_and_expired_stopped: true,
+    binary_sha256: createHash('sha256').update(await readFile(binary)).digest('hex'),
     model_requests: modelRequests, version: hello.serverVersion }));
   await call('daemon.shutdown', {});
 } finally {

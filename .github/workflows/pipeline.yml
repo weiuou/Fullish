@@ -172,6 +172,16 @@ jobs:
             --security-opt no-new-privileges:true --pids-limit 128 --memory 512m \
             --mount "type=bind,source=$PWD,target=/workspace,readonly" \
             --entrypoint node fullish-agent:ci /workspace/tests/agent_container_smoke.mjs
+      - name: Verify the actual companion launcher and private volumes
+        run: |
+          docker run --rm --init --network none --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /run/secrets:rw,noexec,nosuid,size=1m,uid=10001,gid=10001,mode=0700 \
+            --volume /var/lib/fullish-agent --volume /var/lib/fullish-agent-work \
+            --volume /run/fullish-agent --cap-drop ALL --security-opt no-new-privileges:true \
+            --pids-limit 128 --memory 512m \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --entrypoint node fullish-agent:ci /workspace/tests/agent_launch_smoke.mjs
 
   publish:
     name: Publish verified image

@@ -191,6 +191,19 @@ def main() -> None:
     if len(worker_images) > 1:
         visualization = run(*docker, "image", "inspect", "--format", "{{.Id}}", worker_images[1])
         print(run("bash", str(root / "scripts/sandbox-setup.sh"), group, visualization), flush=True)
+        visual_container = json.loads(run(*docker, "inspect", run(*docker, "ps", "-q")))[0]
+        visual_pid = visual_container["State"]["Pid"]
+        assert "gvisor" in Path(f"/proc/{visual_pid}/exe").resolve().name
+        visual_path = next(
+            line[3:]
+            for line in Path(f"/proc/{visual_pid}/cgroup").read_text().splitlines()
+            if line.startswith("0::")
+        )
+        visual_cgroup = Path("/sys/fs/cgroup") / visual_path.lstrip("/")
+        assert int((visual_cgroup / "memory.max").read_text()) == 1024 * 1024 * 1024
+        assert int((visual_cgroup / "memory.swap.max").read_text()) == 0
+        assert int((visual_cgroup / "pids.max").read_text()) == 128
+        print("PASS visualization gVisor has bounded 1 GiB/128 PID host profile", flush=True)
         # This process reaches the real broker, worker and native browser. It does not call
         # a model or QQ and never treats a mocked browser as gVisor acceptance.
         print(

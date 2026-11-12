@@ -1,5 +1,6 @@
 """The OCI adapter must refuse execution outside an enforced dedicated cgroup."""
 
+import json
 import runpy
 import subprocess
 import sys
@@ -14,7 +15,10 @@ class Executed(BaseException):
     pass
 
 
-@pytest.mark.parametrize("change", ["valid", "memory", "swap", "cpu", "pids", "root", "bot"])
+@pytest.mark.parametrize(
+    "change",
+    ["valid", "visualization", "unknown_profile", "memory", "swap", "cpu", "pids", "root", "bot"],
+)
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux cgroup paths and UID mapping")
 def test_adapter_requires_host_limits_before_starting_runsc(tmp_path, change):
     script = Path(__file__).resolve().parents[1] / "scripts/sandbox-runsc.py"
@@ -33,6 +37,16 @@ def test_adapter_requires_host_limits_before_starting_runsc(tmp_path, change):
         "memory.swap.max": "0",
         "pids.max": "64",
     }
+    if change == "visualization":
+        limits.update({"memory.max": "1073741824", "pids.max": "128"})
+    profile = (
+        ["FULLISH_SANDBOX_PROFILE=visualization"]
+        if change == "visualization"
+        else ["FULLISH_SANDBOX_PROFILE=unbounded"]
+        if change == "unknown_profile"
+        else []
+    )
+    (tmp_path / "config.json").write_text(json.dumps({"process": {"env": profile}}))
     key = {
         "memory": "memory.max",
         "swap": "memory.swap.max",
@@ -64,17 +78,26 @@ def test_adapter_requires_host_limits_before_starting_runsc(tmp_path, change):
             execv=execute,
         ),
         subprocess=commands,
-        sys=SimpleNamespace(argv=[str(script), "--platform=systrap", "create", identifier]),
+        sys=SimpleNamespace(
+            argv=[
+                str(script),
+                "--platform=systrap",
+                "create",
+                "--bundle",
+                str(tmp_path),
+                identifier,
+            ]
+        ),
     )
-    if change == "valid":
+    if change in {"valid", "visualization"}:
         with pytest.raises(Executed):
             main()
         assert (directory / "cgroup.procs").read_text() == "12345"
         assert "--ignore-cgroups" in execute.call_args.args[1]
         arguments = commands.run.call_args.args[0]
-        assert "--property=MemoryMax=512M" in arguments
+        assert f"--property=MemoryMax={'1G' if change == 'visualization' else '512M'}" in arguments
         assert "--property=MemorySwapMax=0" in arguments
-        assert "--property=TasksMax=64" in arguments
+        assert f"--property=TasksMax={128 if change == 'visualization' else 64}" in arguments
     else:
         with pytest.raises(ValueError):
             main()

@@ -87,7 +87,7 @@ sudo docker exec fullish-bot-1 python -m fullish.tools.audit --audit-id 填入au
 
 | 限制 | 固定设置 |
 | --- | --- |
-| 单容器资源 | 1 核、512MiB 内存、不使用 swap、64 个进程/线程 |
+| 单容器资源 | 普通镜像：1 核、512 MiB、64 个进程/线程；可选 visualization 镜像：1 核、1 GiB、128 个进程/线程；均不使用 swap |
 | 网络 | `none`，不允许宿主机网络或公网 |
 | 根文件系统 | 只读，非 root，移除所有 Linux capabilities |
 | 群工作区 | `/workspace` 的 128MiB tmpfs；跨命令保留，文件超过一天在后续任务前清理 |
@@ -99,6 +99,8 @@ sudo docker exec fullish-bot-1 python -m fullish.tools.audit --audit-id 填入au
 工作区是临时内存文件系统：机器人部署和 broker 重启通常复用现有容器；容器重建、主机重启或升级沙箱镜像会丢失文件，不是持久资料库。Shell 变量不跨调用保留。异常退出、包装器损坏或清理失败会丢弃容器，后续请求重新创建。网络/运行时错误可能意味着命令已开始执行，不应盲目重复有副作用的操作。
 
 broker 固定镜像、路径、用户、网络和限制，模型不能传入 Docker 参数。启动和每次调用会检查 rootless、runsc、cgroup v2，以及宿主机实际 cgroup 的 CPU/内存/swap/进程限额；限制不可确认时拒绝执行，绝不降级到宿主机 Shell 或普通 runc。gVisor 增加隔离层，同机资源控制仍依赖宿主机，见 [安全模型](https://gvisor.dev/docs/architecture_guide/security/)。
+
+可选渲染镜像通过固定镜像环境标记 `FULLISH_SANDBOX_PROFILE=visualization` 声明资源配置；群消息和工具参数不能选择它。部署维护者选择该镜像 digest 时需要同步更新 broker 与 OCI 适配器，并验证整机余量；未知配置会被拒绝。该新增配置的设计和当前验收状态见 [agent 接入指南](agent-runtime.md)。
 
 ## 运行时与资源限制
 

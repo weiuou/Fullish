@@ -16,6 +16,7 @@ RUN npm ci --ignore-scripts --omit=dev
 
 FROM base AS visualization
 USER root
+ENV FULLISH_SANDBOX_PROFILE=visualization
 ARG CHROMIUM_VERSION=156.0.8078.79-1~deb12u1
 ARG NOTO_CJK_VERSION=1:20220127+repack1-1
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \

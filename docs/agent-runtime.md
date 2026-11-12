@@ -12,7 +12,7 @@ Fullish 可以为显式列出的群选择 Dim 回复后端。每个被叫到的�
 
 Fullish 的任务时限为 90 秒，桥接最多 12 次调用、2 次渲染。模型开始事件超过 16 次时撤销运行并请求停止；这是观察后的停止门槛，可能已有请求在途，不是精确的计费配额。专用 companion 的独立看门狗读取不含预览的会话目录，停止创建超过 90 秒或失去控制端超过 2 秒的运行会话；控制通道失效或停止不能确认时终止专用 daemon。它不恢复或重投任务。单次模型输出配置上限为 8192 tokens；模型实际报告的 token 数、请求数和渲染数进入关联元数据日志，不记录提示词和图片。
 
-最小运行登记位于 `GROUP_CONTROL_DIR/agent-runs.sqlite3`。它只保存事件摘要、run/session 和执行/投递状态，不保存可重放的文字或图片。相同事件重投不会再次执行，重启后的未决运行与投递标为不明。成功记录默认保留七天，未决记录不自动过期；该登记不提供自动任务恢复或补发。
+最小运行登记位于 `GROUP_CONTROL_DIR/agent-runs.sqlite3`。它只保存事件摘要、run/session 和执行/投递状态，不保存可重放的文字或图片。相同事件重投不会再次执行，重启后的未决运行与投递标为不明。启动时清理超过七天的已知终态记录，未决记录不自动过期；该登记不提供自动任务恢复或补发。
 
 ## 当前验证证据
 
@@ -61,6 +61,10 @@ docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sand
 ```
 
 普通沙箱仍是默认构建目标。渲染镜像预装 Node、Chromium、中文字体、Mermaid 和 Playwright，运行时断网；源文件与输出有大小、像素、路径及时间限制。HTML/SVG 的页面脚本关闭，Mermaid 使用受限 DSL 和严格模式，远程与文件子资源被拒绝。
+
+渲染镜像声明独立的资源配置：1 核、1 GiB 内存、128 PIDs、无 swap；普通镜像仍为 512 MiB/64 PIDs。Chromium 保留正常进程模型与内层沙箱，Linux CLI 只接受 Fullish worker 的 PID 命名空间。broker 从维护者指定的固定镜像读取配置，同时检查 Docker 和真实宿主机 cgroup；群消息不能扩大限制。该配置尚待本轮真实 gVisor 验收，不将本地浏览器成功当作部署通过。
+
+切换渲染镜像前，先安装本分支的 `scripts/sandbox-runtime-setup.sh` 所用 OCI 适配器与 `scripts/sandbox-setup.sh` 所用 broker，再按原流程安装新的沙箱镜像 digest。旧适配器不能承载新增配置；应保持部署门禁失败并继续原 sender，不临时放开限制。部署前测量 bot、CPA、Dim 与最多两组沙箱的共同峰值，单个渲染任务仍按 90 秒交互预算运行。
 
 使用独立的 [Compose 覆盖文件](../deploy/compose.agent.yaml) 加入 agent；它只挂载独立 home、任务工作区、RPC 目录与两份所需凭证，不挂载 bot 控制数据库、钱包或宿主机目录。服务使用 UID/GID 10001，与 bot 通过同 UID 的私有 socket 通信；容器文件系统仍分离。CPA 经宿主机回环地址访问，agent 不开放 WebSocket 或公网服务。
 

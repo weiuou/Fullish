@@ -121,6 +121,7 @@ class AgentBridge:
             if (
                 not isinstance(source, str)
                 or not 0 < len(source.encode()) <= 48000
+                or not isinstance(format_name, str)
                 or format_name not in {"svg", "mermaid", "html"}
                 or type(width) is not int
                 or type(height) is not int

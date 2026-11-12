@@ -121,7 +121,7 @@ renderer 独立于 Dim，便于离线测试和替换 agent。依赖、Mermaid �
 
 首个切片先完成固定中文 SVG 到 PNG，再接 Mermaid，最后接有界 HTML 片段。限制源文件字节、画布尺寸/像素、输出 PNG 字节和渲染时间，等待字体与渲染就绪后截图。输出只能落在本次 workspace 的受控路径。
 
-保留 Rootless Docker/gVisor、断网、只读根目录、原 CPU/内存/进程/超时约束。在真实环境验证浏览器及其子进程可启动、退出并被清理。遇到限制失败时先优化或缩小第一版格式范围；资源或隔离边界调整必须形成单独的设计变更，不能悄悄改为宿主机执行。
+保留 Rootless Docker/gVisor、断网、只读根目录及有界 CPU/内存/进程/超时约束。在真实环境验证浏览器及其子进程可启动、退出并被清理。开发验收发现普通镜像的 512 MiB/64 PIDs 不足以运行 Chromium；经 [Issue #43](https://github.com/weiuou/Fullish/issues/43) 的资源设计变更，可选 visualization 镜像使用独立的 1 GiB/128 PIDs 配置，保持 1 核和 Chromium 内层沙箱，普通镜像仍用原配置。安装该镜像须同步更新 broker/OCI 适配器并验证容量，不能改为宿主机或普通 runc 执行。
 
 ## 分阶段开发与验收门槛
 
