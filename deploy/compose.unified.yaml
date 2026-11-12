@@ -1,0 +1,42 @@
+# Explicit single-container profile. Never combine with compose.agent.yaml.
+services:
+  bot:
+    user: "0:0"
+    entrypoint: ["python", "/opt/fullish-integrated/launch.py"]
+    network_mode: host
+    ports: !reset []
+    env_file:
+      - path: ./agent.env
+        format: raw
+    environment:
+      HOST: 127.0.0.1
+      PORT: 18080
+      DIM_DEPLOYMENT: unified
+      DIM_INSPECTION: "true"
+      DIM_ENDPOINT: /run/fullish-integrated/dim/rpc.sock
+      DIM_WORKSPACE_ROOT: /var/lib/fullish-integrated-work
+      DIM_BRIDGE_SOCKET: /run/fullish-integrated/fullish/bridge.sock
+      DIM_BRIDGE_TOKEN_FILE: /run/secrets/dim-bridge-token
+      FULLISH_DIAGNOSTICS_DIR: /var/lib/fullish-diagnostics
+    volumes:
+      - integrated-rpc:/run/fullish-integrated
+      - integrated-home:/var/lib/fullish-integrated-agent
+      - integrated-work:/var/lib/fullish-integrated-work
+      - diagnostics:/var/lib/fullish-diagnostics
+      - ./integrated-secrets/model-key:/run/secrets/dim-model-key:ro
+      - ./integrated-secrets/bridge-fullish:/run/secrets/dim-bridge-token:ro
+      - ./integrated-secrets/bridge-dim:/run/secrets/dim-bridge-token-agent:ro
+    cap_add: [SETUID, SETGID]
+    group_add: ["10003"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1
+    pids_limit: 256
+
+volumes:
+  integrated-rpc:
+  integrated-home:
+  integrated-work:
+  diagnostics:

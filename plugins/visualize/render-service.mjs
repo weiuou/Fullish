@@ -72,7 +72,7 @@ export function renderPng(args, cancelled = new Promise(() => {}), authorize = a
   return Promise.race([job, queuedCancellation]);
 }
 
-export async function probeRenderer(cancelled) {
+export async function probeRenderer(cancelled, authorize = async () => {}) {
   const cases = [
     ['svg', '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="650" viewBox="0 0 1000 650"><rect width="1000" height="650" fill="#e0f2fe"/><text x="40" y="100" font-size="32">中文完整画布</text></svg>'],
     ['mermaid', 'flowchart TD\n A["输入"] --> B["理解"] --> C["规划"] --> D["绘图"] --> E["检查"] --> F["修改"] --> G["确认"]\n G -->|继续| B\n G -->|结束| H["完成"]'],
@@ -84,7 +84,7 @@ export async function probeRenderer(cancelled) {
   const results = [];
   for (const [format, source, expected] of cases) {
     try {
-      const png = await renderPng({ format, source, width: 1000, height: 650 }, cancelled);
+      const png = await renderPng({ format, source, width: 1000, height: 650 }, cancelled, authorize);
       if (expected) throw Error('dim_probe_unsafe_source_accepted');
       results.push({ format, outcome: 'png', bytes: png.length, width: 1000, height: 650 });
     } catch (error) {

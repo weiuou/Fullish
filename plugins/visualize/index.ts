@@ -2,6 +2,7 @@ import { definePlugin } from '@arcships/rutis';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { renderPng, validateRender, probeRenderer } from './render-service.mjs';
+import { inspectSource, selfCheck } from './inspect.mjs';
 
 const guideNames = new Set(['overview', 'flowchart', 'data', 'layout']);
 
@@ -52,6 +53,32 @@ const parts = definePlugin({
   name: 'FullishVisualizeTools', inject: ['toolRegistry'],
   async apply(ctx: any) {
     const registry = ctx.use('toolRegistry');
+    for (const definition of [
+      { name: 'fullish_inspect', description: 'Read Fullish source code and documentation from a read-only view. '
+        + 'List directories or read at most 120 lines; no writes, credentials or arbitrary commands.',
+        schema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'read'] },
+          path: { type: 'string', maxLength: 240 }, start_line: { type: 'integer', minimum: 1 },
+          line_count: { type: 'integer', minimum: 1, maximum: 120 } }, required: ['action'], additionalProperties: false } },
+      { name: 'fullish_self_check', description: 'Inspect actual runtime identities, read-only boundaries, '
+        + 'current permissions and safe recent deployment errors. Optionally test the renderer once. Does not change Fullish.',
+        schema: { type: 'object', properties: { render: { type: 'boolean' } }, additionalProperties: false } },
+    ]) {
+      await registry.register({ name: definition.name, source: 'extension', risk: 'session',
+        description: definition.description, inputSchema: definition.schema },
+      async (call: any, cancelled: Promise<void>) => {
+        try {
+          const grant = await invoke(call, definition.name, cancelled);
+          if (grant.isError) return grant;
+          if (grant.protocol !== 3) throw Error('inspection_protocol');
+          const value = definition.name === 'fullish_inspect' ? await inspectSource(call.arguments)
+            : await selfCheck(grant.inspection, call.arguments.render === true, cancelled, async () => {
+              const checked = await invoke(call, 'fullish_inspection_check', cancelled, { render: true });
+              if (checked.isError || checked.protocol !== 3) throw Error('inspection_revoked');
+            });
+          return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+        } catch { return { isError: true, content: [{ type: 'text', text: 'fullish_inspection_failed' }] }; }
+      });
+    }
     await registry.register({ name: 'visualize_guide', source: 'extension', risk: 'session',
       description: 'Read one drawing guide before creating or revising a diagram.',
       inputSchema: { type: 'object', properties: { topic: { type: 'string',

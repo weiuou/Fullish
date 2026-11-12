@@ -1,9 +1,9 @@
 /** Dedicated runtime entrypoint: no bot, wallet, personal-home or arbitrary workspace mounts. */
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, lstat, chmod, unlink } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
-import { createConnection } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { connectControl, stopExpiredSessions } from './control.mjs';
 
 const require = createRequire(import.meta.url);
@@ -14,11 +14,13 @@ const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
 if (version.status !== 0 || version.stdout.trim() !== 'dimcode 0.1.0-alpha.20') {
   throw Error('dim_version_mismatch');
 }
-const endpoint = '/run/fullish-agent/rpc.sock';
+const integrated = process.env.DIM_DEPLOYMENT === 'unified';
+const endpoint = process.env.DIM_ENDPOINT || '/run/fullish-agent/rpc.sock';
 
 async function check() {
   const info = await lstat(endpoint);
-  if (!info.isSocket() || info.uid !== process.getuid() || (info.mode & 0o077)) {
+  if (!info.isSocket() || info.uid !== process.getuid()
+      || (integrated ? info.gid !== 10003 || (info.mode & 0o777) !== 0o660 : info.mode & 0o077)) {
     throw Error('private_agent_socket_required');
   }
   await new Promise((resolve, reject) => {
@@ -60,9 +62,11 @@ async function check() {
 if (process.argv[2] === '--check') {
   await check();
 } else {
-  const home = '/var/lib/fullish-agent';
+  const home = process.env.DIM_HOME || '/var/lib/fullish-agent';
+  const nativeEndpoint = integrated ? resolve(home, 'native/rpc.sock') : endpoint;
+  if (integrated) await mkdir(dirname(nativeEndpoint), { recursive: true, mode: 0o700 });
   const modelKey = (await readFile('/run/secrets/dim-model-key', 'utf8')).trim();
-  const bridgeToken = (await readFile('/run/secrets/dim-bridge-token', 'utf8')).trim();
+  const bridgeToken = (await readFile(process.env.DIM_BRIDGE_TOKEN_FILE || '/run/secrets/dim-bridge-token', 'utf8')).trim();
   if (!modelKey || bridgeToken.length < 32) throw Error('agent_credentials_missing');
   const base = new URL(process.env.DIM_MODEL_BASE_URL || 'http://127.0.0.1:8317/v1');
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
@@ -78,21 +82,30 @@ if (process.argv[2] === '--check') {
   }] };
   await writeFile(resolve(home, 'model.json'), JSON.stringify(config), { mode: 0o600 });
   const child = spawn(binary, ['app-server', '--home', home, '--model-config', resolve(home, 'model.json'),
-    '--unix', endpoint, '--no-ws', '--threads', '2', '--defaults', '/opt/fullish-plugin/defaults.json',
+    '--unix', nativeEndpoint, '--no-ws', '--threads', '2', '--defaults', '/opt/fullish-plugin/defaults.json',
     '--node', '/usr/local/bin/node', '--js-runtime', '/opt/fullish-plugin/node_modules/@arcships/rutis-runtime'],
   { stdio: 'inherit', env: {
     PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home, LANG: 'C.UTF-8', RUST_LOG: 'error',
+    ...(integrated ? { DIM_DEPLOYMENT: 'unified', TMPDIR: process.env.TMPDIR } : {}),
     FULLISH_AGENT_MODEL_KEY: modelKey, FULLISH_AGENT_BRIDGE_TOKEN: bridgeToken,
-    FULLISH_AGENT_BRIDGE_SOCKET: '/run/fullish-agent/bridge.sock',
+    FULLISH_AGENT_BRIDGE_SOCKET: process.env.DIM_BRIDGE_SOCKET || '/run/fullish-agent/bridge.sock',
   } });
   let stopping = false;
+  let proxy;
+  const connections = new Set();
+  const closeProxy = () => {
+    proxy?.close();
+    for (const connection of connections) connection.destroy();
+    connections.clear();
+  };
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
     stopping = true;
+    closeProxy();
     child.kill(signal);
   });
   child.on('error', () => { process.exitCode = 1; });
   child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
-  child.once('exit', () => { stopping = true; });
+  child.once('exit', () => { stopping = true; closeProxy(); });
   const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   // The controller can disappear while the daemon remains healthy. Independently stop
   // orphan/expired sessions; an unresponsive control plane terminates this dedicated daemon.
@@ -101,17 +114,54 @@ if (process.argv[2] === '--check') {
     const readyBy = Date.now() + 20_000;
     try {
       while (!stopping && !control) {
-        try { control = await connectControl(endpoint); }
+        try {
+          control = await connectControl(nativeEndpoint, { privateSocket: integrated });
+        }
         catch {
           if (Date.now() >= readyBy) throw Error('agent_watchdog_start_timeout');
           await pause(200);
         }
+      }
+      if (integrated && !stopping) {
+        try {
+          const previous = await lstat(endpoint);
+          if (!previous.isSocket() || previous.uid !== process.getuid() || previous.gid !== 10003) {
+            throw Error('proxy_path_not_owned');
+          }
+          await new Promise((resolve, reject) => {
+            const probe = createConnection(endpoint);
+            probe.setTimeout(1000, () => probe.destroy(Error('proxy_probe_timeout')));
+            probe.once('connect', () => { probe.destroy(); reject(Error('proxy_in_use')); });
+            probe.once('error', error => error.code === 'ECONNREFUSED' ? resolve() : reject(error));
+          });
+          const current = await lstat(endpoint);
+          if (current.ino !== previous.ino || current.dev !== previous.dev) throw Error('proxy_path_changed');
+          await unlink(endpoint);
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        proxy = createServer(client => {
+          const upstream = createConnection(nativeEndpoint);
+          connections.add(client); connections.add(upstream);
+          const close = () => {
+            client.destroy(); upstream.destroy();
+            connections.delete(client); connections.delete(upstream);
+          };
+          client.on('error', close); upstream.on('error', close);
+          client.on('close', close); upstream.on('close', close);
+          client.pipe(upstream).pipe(client);
+        });
+        proxy.maxConnections = 32;
+        await new Promise((resolve, reject) => {
+          proxy.once('error', reject); proxy.listen(endpoint, resolve);
+        });
+        proxy.on('error', () => { child.kill('SIGTERM'); });
+        await chmod(endpoint, 0o660);
       }
       while (!stopping) {
         await stopExpiredSessions(control.call);
         await pause(500);
       }
     } catch {
+      closeProxy();
       if (!stopping) {
         process.stderr.write('agent_watchdog_failed\n');
         child.kill('SIGTERM');

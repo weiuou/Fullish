@@ -4,6 +4,8 @@
 
 ## 已实现的接入结构
 
+同容器与只读自检的候选变更正在验证，见[同容器指南](unified-runtime.md)。下述部署记录仍对应已上线的独立 companion，不代表候选已切换。
+
 Fullish 为 `DIM_ALLOWED_GROUPS` 中的具体群选择 Dim 回复后端，每条被叫到的消息建立独立任务会话。Dim 使用固定 `dimcode-alpha@0.1.0-alpha.20` 原生 App Server v3，rutis 插件 SDK/runtime 固定 `0.19.3`，visualize 插件版本为 `0.2.0`。Fullish 保留群上下文、身份、权限、队列和最终投递确认；Dim 群关闭额外的表达后处理。
 
 `visualize_render` 是实际执行绘图的 rutis 工具：插件在专用 Dim companion 内创建私有临时目录，直接调用 Chromium 渲染 SVG、Mermaid 或 HTML，返回真实 PNG 给模型检查，结束时删除临时文件。Fullish 不执行绘图源码，也不为该工具调用 `ToolRuntime`、群沙箱或 broker。通用沙箱仍按原配置独立运行。

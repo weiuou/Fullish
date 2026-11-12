@@ -2,9 +2,11 @@
 import { createConnection } from 'node:net';
 import { lstat } from 'node:fs/promises';
 
-export async function connectControl(endpoint) {
+export async function connectControl(endpoint, { privateSocket = false } = {}) {
   const info = await lstat(endpoint);
-  if (!info.isSocket() || info.uid !== process.getuid() || (info.mode & 0o077)) {
+  const integrated = process.env.DIM_DEPLOYMENT === 'unified' && !privateSocket;
+  if (!info.isSocket() || info.uid !== process.getuid()
+      || (integrated ? info.gid !== 10003 || (info.mode & 0o777) !== 0o660 : info.mode & 0o077)) {
     throw Error('private_agent_socket_required');
   }
   const socket = createConnection(endpoint);

@@ -85,6 +85,7 @@ jobs:
         with:
           context: .
           load: true
+          target: unified
           push: false
           platforms: ${{ vars.DEPLOY_PLATFORM || 'linux/amd64' }}
           tags: fullish:ci
@@ -110,6 +111,8 @@ jobs:
         run: |
           docker build -f deploy/Dockerfile.agent -t fullish-agent:integration-ci .
           sudo env FULLISH_DIRECT_AGENT_CI=1 node tests/direct_agent_integration.mjs fullish:ci fullish-agent:integration-ci
+      - name: Verify single-container identities and read-only inspection
+        run: sudo env FULLISH_UNIFIED_CI=1 node tests/unified_agent_integration.mjs fullish:ci
       - name: Install rootless sandbox test prerequisites
         run: |
           sudo apt-get update

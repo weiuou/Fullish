@@ -95,6 +95,7 @@ async def client_flow(
         frozenset({GROUP}),
         enabled=True,
         executable=executable,
+        inspection=os.environ.get("DIM_INSPECTION") == "true",
     )
     rpc = await DimRPC.connect(endpoint, executable=executable)
     try:
@@ -198,7 +199,9 @@ async def run(args) -> dict:
             }
         )
         access = AccessPolicy(policies=policy)
-        bridge = AgentBridge(access, enabled=True)
+        bridge = AgentBridge(
+            access, enabled=True, inspection=os.environ.get("DIM_INSPECTION") == "true"
+        )
         server = None
         serving = None
         private_server = None

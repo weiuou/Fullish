@@ -15,7 +15,8 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 
-from fullish.agents.rpc import DimError
+from fullish.agents.local import unified
+from fullish.agents.rpc import DIM_VERSION, DimError
 from fullish.media.assets import MAX_ASSET_BYTES, ImageAssets
 from fullish.policies.access import AccessPolicy
 from fullish.sending import Image, OutgoingMessage, Reply, Text
@@ -63,13 +64,15 @@ class RunLease:
     selected: bool = False
     candidate: Reply | None = None
     pending: RenderTicket | None = None
+    probes: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class AgentBridge:
-    def __init__(self, access: AccessPolicy, *, enabled: bool = False):
+    def __init__(self, access: AccessPolicy, *, enabled: bool = False, inspection: bool = False):
         self.access = access
         self.enabled = enabled
+        self.inspection = inspection
         self.leases: dict[str, RunLease] = {}
 
     def bind(self, run_id: str, session_id: str, context: ToolContext, deadline: float) -> RunLease:
@@ -93,11 +96,15 @@ class AgentBridge:
 
     def tool_names(self, context: ToolContext) -> list[str]:
         lease = RunLease("", "", context, time.monotonic() + 1)
+        result: list[str]
         try:
             self.check(lease, render=True)
-            return list(PLUGIN_TOOLS)
+            result = list(PLUGIN_TOOLS)
         except DimError:
-            return ["fullish_reply"]
+            result = ["fullish_reply"]
+        if self.inspection and self.access.group_allowed(context.group_id):
+            result = ["fullish_inspect", "fullish_self_check", *result]
+        return result
 
     @staticmethod
     def rendered(lease: RunLease, ticket: RenderTicket, code: str = "") -> None:
@@ -122,10 +129,49 @@ class AgentBridge:
             self.check(lease)
             if lease.selected:
                 raise DimError("dim_tool_budget_or_finalized")
-            if name in {"fullish_reply", "visualize_begin"}:
+            if name == "fullish_inspection_check":
+                if not self.inspection or not lease.probes or arguments != {"render": True}:
+                    raise DimError("dim_inspection_not_allowed")
+                self.check(lease, render=True)
+                return {"protocol": 3}
+            if name in {
+                "fullish_reply",
+                "visualize_begin",
+                "fullish_inspect",
+                "fullish_self_check",
+            }:
                 lease.calls += 1
                 if lease.calls > 12:
                     raise DimError("dim_tool_budget_or_finalized")
+            if name in {"fullish_inspect", "fullish_self_check"}:
+                if not self.inspection:
+                    raise DimError("dim_inspection_not_allowed")
+                if name == "fullish_self_check":
+                    if (
+                        set(arguments) - {"render"}
+                        or type(arguments.get("render", False)) is not bool
+                    ):
+                        raise DimError("dim_invalid_inspection")
+                    if arguments.get("render"):
+                        self.check(lease, render=True)
+                        if lease.probes:
+                            raise DimError("dim_probe_budget")
+                        lease.probes += 1
+                return {
+                    "protocol": 3,
+                    "inspection": {
+                        "revision": os.environ.get("APP_REVISION", "dev"),
+                        "deployment": "unified" if unified() else "companion",
+                        "fullish_uid": os.geteuid() if os.name != "nt" else None,
+                        "model": os.environ.get("AI_MODEL", ""),
+                        "dim_model": os.environ.get("DIM_MODEL_ID", ""),
+                        "dim_runtime_version": DIM_VERSION,
+                        "permissions": {
+                            "chat": True,
+                            "image": self.access.image_allowed(lease.context),
+                        },
+                    },
+                }
             if name == "fullish_reply":
                 if lease.pending:
                     raise DimError("dim_render_in_progress")
@@ -325,7 +371,7 @@ class BridgeServer:
                         await self.task
                         raise DimError("dim_bridge_start_failed")
                     await asyncio.sleep(0.05)
-            self.socket.chmod(0o600)
+            self.socket.chmod(0o660 if unified() else 0o600)
             self.owns_socket = True
         except BaseException:
             await self.close()

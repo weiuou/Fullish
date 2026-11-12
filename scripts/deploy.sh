@@ -35,7 +35,12 @@ repository=$(< "$root/image-repository")
 [[ -z $current || ${current%@sha256:*} == "$repository" ]] || die 'Current image repository differs from host configuration.'
 export FULLISH_IMAGE="$target"
 compose=(docker compose --project-name fullish --file "$root/compose.yaml")
-if [[ -f $root/compose.agent.yaml ]]; then
+exec_user=()
+if [[ -f $root/compose.unified.yaml ]]; then
+    [[ ! -f $root/compose.agent.yaml ]] || die 'Choose one agent deployment profile.'
+    compose+=(--file "$root/compose.unified.yaml")
+    exec_user=(--user 10001:10001)
+elif [[ -f $root/compose.agent.yaml ]]; then
     [[ -f $root/agent-image ]] || die 'Agent override requires a reviewed agent-image digest file.'
     FULLISH_AGENT_IMAGE=$(< "$root/agent-image")
     valid_image "$FULLISH_AGENT_IMAGE" || die 'Agent runtime requires an immutable image digest.'
@@ -83,6 +88,9 @@ if (( rollback_mode == 0 )) || ! docker image inspect "$target" >/dev/null 2>&1;
     timeout 300 docker pull "$target" >/dev/null
 fi
 healthcheck=$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$target")
+if [[ -f $root/compose.unified.yaml ]]; then
+    [[ $(docker image inspect --format '{{index .Config.Labels "org.fullish.unified-runtime"}}' "$target") == true ]] || die 'Restore the saved companion profile before deploying an image without the unified bootstrap.'
+fi
 [[ $healthcheck != null && $healthcheck != '[]' && $healthcheck != '["NONE"]' ]] || die 'Candidate image has no usable healthcheck.'
 if [[ -n $current ]] && ! docker image inspect "$current" >/dev/null 2>&1; then
     timeout 120 docker pull "$current" >/dev/null
@@ -123,7 +131,7 @@ if wallet_enabled; then
 fi
 agent_enabled() { grep -Eq '^AGENT_BACKEND=dim[[:space:]]*$' "$root/runtime.env"; }
 if agent_enabled; then
-    [[ -f $root/compose.agent.yaml ]] || die 'Dim requires the explicitly installed agent override.'
+    [[ -f $root/compose.agent.yaml || -f $root/compose.unified.yaml ]] || die 'Dim requires an explicitly installed agent override.'
     timeout 180 "${compose[@]}" run --rm --no-deps --pull never bot python -m fullish.agents.check --preflight
 fi
 apply_started=1
@@ -135,13 +143,13 @@ container=$("${compose[@]}" ps --quiet bot)
 [[ $(docker inspect --format '{{.State.Health.Status}}' "$container") == healthy ]] || die 'Application did not pass its healthcheck.'
 [[ $(docker inspect --format '{{.Config.Image}}' "$container") == "$target" ]] || die 'Running image does not match the requested digest.'
 if sandbox_enabled; then
-    timeout 90 docker exec "$container" python -c "$module_runner" fullish.sandbox.check fullish.sandbox_check
+    timeout 90 docker exec "${exec_user[@]}" "$container" python -c "$module_runner" fullish.sandbox.check fullish.sandbox_check
 fi
 if wallet_enabled; then
-    timeout 90 docker exec "$container" python -c "$module_runner" fullish.wallet.check fullish.wallet_check
+    timeout 90 docker exec "${exec_user[@]}" "$container" python -c "$module_runner" fullish.wallet.check fullish.wallet_check
 fi
 if agent_enabled; then
-    timeout 180 docker exec "$container" python -m fullish.agents.check
+    timeout 180 docker exec "${exec_user[@]}" "$container" python -m fullish.agents.check
 fi
 
 if [[ $current != "$target" ]]; then previous=$current; fi
@@ -168,7 +176,7 @@ report_previous=''
 if [[ $report_revision =~ ^[a-f0-9]{40}$ ]] && [[ -z $report_previous || $report_previous =~ ^[a-f0-9]{40}$ ]]; then
     report_args=(--previous "$report_previous" --current "$report_revision")
     (( rollback_mode == 0 )) || report_args+=(--rollback)
-    if ! timeout 320 docker exec "$container" python -c "$module_runner" fullish.notifications.report fullish.release_report "${report_args[@]}"; then
+    if ! timeout 320 docker exec "${exec_user[@]}" "$container" python -c "$module_runner" fullish.notifications.report fullish.release_report "${report_args[@]}"; then
         printf 'WARNING: deployment succeeded, but the QQ deployment report failed.\n' >&2
     fi
 else
