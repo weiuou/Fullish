@@ -1,6 +1,6 @@
 # Dim agent 与 visualize 插件开发路径
 
-状态：开发设计；P0–P4 首版已实现并通过隔离环境验收，P5 实群试运行尚未开始。日期：2026-11-12。Fullish 核对基线：`989f920`；Dim 包：`dimcode-alpha@0.1.0-alpha.20`。当前实现和分层验收见 [接入与验证](agent-runtime.md)，不代表生产已启用这些能力。
+状态：开发设计；P0–P4 首版已实现，P5 已进入显式单群试运行并完成一次真实模型与 QQ 受控验收。日期：2026-11-12。Fullish 核对基线：`989f920`；Dim 包：`dimcode-alpha@0.1.0-alpha.20`。部署状态、证据与观察范围见 [接入与验证](agent-runtime.md)。
 
 ## 目标与首个交付
 
@@ -147,7 +147,7 @@ P0 是第一项开发任务。P3 的渲染试验可并行提前，但插件完�
 5. `feat: add the Dim visualize plugin`
 6. `feat: validate and deploy the opt-in agent runtime`
 
-接口、存储与部署设计已按 [贡献约定](../CONTRIBUTING.md) 记录于 [Issue #43](https://github.com/weiuou/Fullish/issues/43)，关联 #42 的插件与渲染分工。代码在独立 worktree 中开发，尚未发布至生产。
+接口、存储与部署设计已按 [贡献约定](../CONTRIBUTING.md) 记录于 [Issue #43](https://github.com/weiuou/Fullish/issues/43)，关联 #42 的插件与渲染分工。首版已通过 [PR #44](https://github.com/weiuou/Fullish/pull/44) 合并部署，当前只对显式单群开放试运行。
 
 ## P6/P7 的明确边界
 
@@ -172,7 +172,7 @@ P0 是第一项开发任务。P3 的渲染试验可并行提前，但插件完�
 5. 提交断连、任务取消、进程重启、QQ 回执不明不会自动重跑或重复发送。
 6. 后端或插件停用后新任务使用明确配置，在途任务授权被正确撤销或完成清理。
 
-证据分层记录：模拟协议与外部边界回放、固定 Dim 二进制与插件、真实浏览器、真实 rootless gVisor/部署挂载、受控真实模型与 QQ。每层只证明实际执行过的部分；本文件是设计，不包含这些运行验收的完成声明。
+证据分层记录：模拟协议与外部边界回放、固定 Dim 二进制与插件、真实浏览器、真实 rootless gVisor/部署挂载、受控真实模型与 QQ。每层只证明实际执行过的部分；本文件描述设计与门槛，实际验收结果以 [接入与验证](agent-runtime.md) 中的分层证据为准。
 
 交付门槛以“完整画图流程 + 原授权和发送语义正确 + 资源有界 + 可操作的回退”为准。观测关联 `trace_id`、`run_id`、session、后端/插件版本、阶段耗时、工具次数、可获得的 token 用量、取消结果和 QQ 投递状态；普通日志不保存群聊正文、源码、图片或凭证。
 
