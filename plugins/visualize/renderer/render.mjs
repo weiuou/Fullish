@@ -76,7 +76,7 @@ export async function render({ root = '/workspace', input, output, format, width
       <meta http-equiv="Content-Security-Policy" content="${csp}">
       <style>html,body{margin:0;background:#f8fafc;color:#172033;font-family:"Noto Sans CJK SC",sans-serif}
       *{box-sizing:border-box}#canvas{width:${width}px;height:${height}px;overflow:hidden;padding:24px}
-      #canvas>svg{max-width:100%;max-height:100%}</style></head><body><main id="canvas"></main></body></html>`);
+      #canvas>svg{display:block;max-width:100%;max-height:100%}</style></head><body><main id="canvas"></main></body></html>`);
     if (format === 'mermaid') {
       const location = dirname(fileURLToPath(import.meta.url));
       const bundle = await readFile(resolve(location, 'node_modules/mermaid/dist/mermaid.min.js'), 'utf8');

@@ -18,10 +18,38 @@ from fullish.agents.rpc import DimError
 from fullish.media.assets import ImageAssets
 from fullish.policies.access import AccessPolicy
 from fullish.sending import Image, OutgoingMessage, Reply, Text
+from fullish.telemetry import elapsed_ms, emit
 from fullish.tools.runtime import ToolContext, ToolRuntime
 from fullish.tools.web import ToolError
 
 PLUGIN_TOOLS = ("visualize_guide", "visualize_render", "fullish_reply")
+RENDER_FAILURES = frozenset(
+    {
+        "canvas_content_clipped",
+        "external_resource_rejected",
+        "chinese_font_missing",
+        "renderer_dependency_failed",
+        "image_too_large",
+        "source_too_large",
+    }
+)
+
+
+def render_failure(result: dict) -> str:
+    """Read only the renderer's fixed codes, never forward its raw process output."""
+    if result.get("timed_out") or result.get("exit_code") == 124:
+        return "dim_render_timeout"
+    output = result.get("output")
+    if isinstance(output, str) and len(output) <= 4096:
+        try:
+            error = json.loads(output)
+        except ValueError:
+            error = None
+        if isinstance(error, dict) and set(error) == {"error"}:
+            code = error["error"]
+            if isinstance(code, str) and code in RENDER_FAILURES:
+                return "dim_render_" + code
+    return "dim_render_failed"
 
 
 @dataclass
@@ -131,6 +159,7 @@ class AgentBridge:
             ):
                 raise DimError("dim_invalid_render")
             lease.renders += 1
+            started = time.monotonic()
             assert self.tools and self.tools.sandbox
             self.tools.charge(lease.context)
             stem = f"visualize_{lease.run_id}_{lease.renders}"
@@ -160,8 +189,21 @@ class AgentBridge:
             response.raise_for_status()
             result = response.json()
             self.check(lease, render=True)
-            if result.get("exit_code") != 0 or result.get("timed_out") or "error" in result:
-                raise DimError("dim_render_failed")
+            failed = result.get("exit_code") != 0 or result.get("timed_out") or "error" in result
+            code = render_failure(result) if failed else ""
+            emit(
+                "agent.render.result",
+                run_id=lease.run_id,
+                render=lease.renders,
+                format=format_name,
+                width=width,
+                height=height,
+                outcome="failed" if failed else "completed",
+                error_code=code,
+                elapsed_ms=elapsed_ms(started),
+            )
+            if failed:
+                raise DimError(code)
             downloaded = json.loads(
                 await self.tools.invoke(
                     "sandbox_download",
