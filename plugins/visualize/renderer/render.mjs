@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Offline source-to-PNG renderer. This executable runs only inside the group sandbox. */
+/** Bounded source-to-PNG renderer, invoked directly by the Dim rutis plugin. */
 import { chromium } from 'playwright-core';
 import { readFile, writeFile, realpath, lstat } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';

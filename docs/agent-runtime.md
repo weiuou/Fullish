@@ -23,7 +23,7 @@ Fullish 为 `DIM_ALLOWED_GROUPS` 中的具体群选择 Dim 回复后端，每条
 | 原生协议与插件 | 真实 Windows alpha.20、受保护 named pipe、rutis 原生工具与 `visualize.probe` 已通过 |
 | 直接浏览器 | 真实 Chromium 生成三种中文 PNG，拒绝远程/文件子资源与溢出；取消后目录回收且可继续绘图 |
 | 完整内部链路 | 真实 Dim、插件、浏览器、Fullish 授权/媒体/投递服务；两次真实 PNG 到达模型请求，最终图片字节一致，模拟 QQ 确认后只记一条回复 |
-| Linux 镜像与发布门禁 | CI 验证真实 companion、私有 Unix RPC、1 GiB/128 PIDs 与无 broker 的完整流程；以候选提交对应 CI 结果为准 |
+| Linux 镜像与发布门禁 | CI 验证真实 companion、私有 Unix RPC、1 GiB/256 PIDs 与无 broker 的完整流程；以候选提交对应 CI 结果为准 |
 | 实际模型与 QQ | 新直接渲染版尚待受控上线验收；旧沙箱版本的成功不代表新版本通过 |
 
 模型与 QQ fixture 属于外部模拟边界，不证明生产模型、真实 QQ 或长期稳定性。旧版验收与固定二进制摘要保存在上述历史记录。
@@ -49,7 +49,7 @@ FULLISH_CHROMIUM=/absolute/path/to/chromium node --test plugins/visualize/render
 docker build -f deploy/Dockerfile.agent -t fullish-agent:verified .
 ```
 
-agent 镜像预装固定 Node、Chromium、Noto CJK、Mermaid 和 Playwright。专用 companion 使用 UID/GID 10001、只读根目录、128 MiB 临时目录、1 核、1 GiB 内存、128 PIDs、无 swap，移除 capabilities 并启用 no-new-privileges；不持有 Docker socket 或 bot 数据库。Linux Chromium 在该普通容器内关闭内层 sandbox，不提供旧 gVisor 绘图隔离保证；这是本次直接渲染的部署边界。页面远程/文件请求仍拒绝，HTML/SVG 脚本关闭，Mermaid 使用严格模式。浏览器只继承最小环境，不继承模型密钥、桥接 token 或 Dim home。
+agent 镜像预装固定 Node、Chromium、Noto CJK、Mermaid 和 Playwright。专用 companion 使用 UID/GID 10001、只读根目录、128 MiB 临时目录、1 核、1 GiB 内存、256 PIDs、无 swap，移除 capabilities 并启用 no-new-privileges；不持有 Docker socket 或 bot 数据库。Linux Chromium 在该普通容器内关闭内层 sandbox，不提供旧 gVisor 绘图隔离保证；这是本次直接渲染的部署边界。页面远程/文件请求仍拒绝，HTML/SVG 脚本关闭，Mermaid 使用严格模式。浏览器只继承最小环境，不继承模型密钥、桥接 token 或 Dim home。
 
 agent 为访问 CPA 使用宿主机网络，仅打开私有 Unix RPC，没有公网监听。维护者部署前检查 bot、CPA、Dim 和既有通用沙箱的共同峰值；直接绘图不增加群沙箱实例。
 
@@ -67,7 +67,7 @@ DIM_VISUALIZATION=true
 
 维护者显式安装覆盖文件，在 `agent-image` 保存核对过的不可变镜像 digest，并同步升级 companion、bot 和部署脚本。旧插件桥接协议与新版本不兼容：先暂停新绘图、排空在途任务，再更换 companion，运行候选镜像 preflight 后切换 bot，最后启用新变量。普通 bot 发布不会下载新 agent 镜像或替换服务器 Compose。保留旧镜像和配置以便协调回退。
 
-`python -m fullish.agents.check --preflight` 在停止旧 bot 前检查固定版本、插件和直接浏览器；新 bot 启动后再次检查，并确认私有桥接拒绝未绑定 session。没有可绘图的已授权群时明确报告零绘图检查。失败阻止替换或触发回滚，不计为健康发布。
+`python -m fullish.agents.check --preflight` 在停止旧 bot 前检查固定版本、插件和直接浏览器；新 bot 启动后再次检查，并确认私有桥接拒绝未绑定 session。没有可绘图的已授权群时报告 `authorized_groups=0`；固定渲染探针仍验证插件环境，不能表示群获权。失败阻止替换或触发回滚，不计为健康发布。
 
 Dim home 持久化私有 Timeline；每任务结束请求关闭并删除 session，这不等于状态卷安全擦除。扩大开放前仍须确定附件、数据库及备份的保留和清理规则。
 

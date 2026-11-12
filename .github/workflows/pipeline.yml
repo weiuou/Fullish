@@ -169,7 +169,7 @@ jobs:
         run: |
           docker run --rm --network none --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,size=128m --cap-drop ALL \
-            --security-opt no-new-privileges:true --pids-limit 128 --memory 1g --memory-swap 1g --cpus 1 \
+            --security-opt no-new-privileges:true --pids-limit 256 --memory 1g --memory-swap 1g --cpus 1 \
             --mount "type=bind,source=$PWD,target=/workspace,readonly" \
             --entrypoint node fullish-agent:ci /workspace/tests/agent_container_smoke.mjs
       - name: Verify the actual companion launcher and private volumes
@@ -179,14 +179,14 @@ jobs:
             --tmpfs /run/secrets:rw,noexec,nosuid,size=1m,uid=10001,gid=10001,mode=0700 \
             --volume /var/lib/fullish-agent --volume /var/lib/fullish-agent-work \
             --volume /run/fullish-agent --cap-drop ALL --security-opt no-new-privileges:true \
-            --pids-limit 128 --memory 1g --memory-swap 1g --cpus 1 \
+            --pids-limit 256 --memory 1g --memory-swap 1g --cpus 1 \
             --mount "type=bind,source=$PWD,target=/workspace,readonly" \
             --entrypoint node fullish-agent:ci /workspace/tests/agent_launch_smoke.mjs
       - name: Verify direct browser cancellation and cleanup
         run: |
           docker run --rm --init --network none --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,size=128m --cap-drop ALL \
-            --security-opt no-new-privileges:true --pids-limit 128 --memory 1g --memory-swap 1g --cpus 1 \
+            --security-opt no-new-privileges:true --pids-limit 256 --memory 1g --memory-swap 1g --cpus 1 \
             --mount "type=bind,source=$PWD,target=/workspace,readonly" \
             --env FULLISH_RENDER_MODULE=/opt/fullish-plugin/render-service.mjs \
             --entrypoint node fullish-agent:ci --test /workspace/plugins/visualize/render-service.test.mjs

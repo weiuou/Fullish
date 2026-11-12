@@ -178,7 +178,11 @@ def test_completion_rechecks_image_permission_and_revocation(tmp_path):
         lease = bridge.bind("e" * 32, "session", CONTEXT, time.monotonic() + 30)
         async with client(bridge) as http:
             grant = await call(http, "visualize_begin", RENDER)
+            assert await call(http, "visualize_check", {"ticket": grant["ticket"]}) == {
+                "protocol": 2
+            }
             policies.change(GROUP, "image", False)
+            assert (await call(http, "visualize_check", {"ticket": grant["ticket"]}))["isError"]
             rejected = await call(http, "visualize_complete", complete(grant))
             assert rejected["content"][0]["text"] == "dim_visualization_not_allowed"
             assert not lease.images.items and lease.candidate is None

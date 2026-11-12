@@ -75,7 +75,7 @@ try {
   await new Promise(resolve => model.listen(0, '127.0.0.1', resolve));
   const mount = (name, target) => ['--mount', `type=bind,source=${resolve(root, name)},target=${target},readonly`];
   const limits = ['--network', 'host', '--read-only', '--tmpfs', '/tmp:rw,noexec,nosuid,size=128m',
-    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--pids-limit', '128'];
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--pids-limit', '256'];
   await docker('run', '-d', '--init', '--name', prefix, ...limits,
     '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
     '--volume', volumes[0] + ':/run/fullish-agent', '--volume', volumes[1] + ':/var/lib/fullish-agent-work',
