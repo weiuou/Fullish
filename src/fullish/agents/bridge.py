@@ -1,4 +1,4 @@
-"""Private run-scoped plugin bridge; only Fullish can bind identity and select a target."""
+"""Private session authorization and PNG candidates; rendering belongs to the Dim plugin."""
 
 import asyncio
 import base64
@@ -6,50 +6,48 @@ import hmac
 import json
 import os
 import stat
+import struct
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 
 from fullish.agents.rpc import DimError
-from fullish.media.assets import ImageAssets
+from fullish.media.assets import MAX_ASSET_BYTES, ImageAssets
 from fullish.policies.access import AccessPolicy
 from fullish.sending import Image, OutgoingMessage, Reply, Text
 from fullish.telemetry import elapsed_ms, emit
-from fullish.tools.runtime import ToolContext, ToolRuntime
-from fullish.tools.web import ToolError
+from fullish.tools.runtime import ToolContext
 
 PLUGIN_TOOLS = ("visualize_guide", "visualize_render", "fullish_reply")
 RENDER_FAILURES = frozenset(
-    {
+    "dim_render_" + code
+    for code in (
         "canvas_content_clipped",
         "external_resource_rejected",
         "chinese_font_missing",
         "renderer_dependency_failed",
         "image_too_large",
         "source_too_large",
-    }
+        "cancelled",
+        "timeout",
+        "canvas_limit",
+        "failed",
+        "cleanup_failed",
+    )
 )
 
 
-def render_failure(result: dict) -> str:
-    """Read only the renderer's fixed codes, never forward its raw process output."""
-    if result.get("timed_out") or result.get("exit_code") == 124:
-        return "dim_render_timeout"
-    output = result.get("output")
-    if isinstance(output, str) and len(output) <= 4096:
-        try:
-            error = json.loads(output)
-        except ValueError:
-            error = None
-        if isinstance(error, dict) and set(error) == {"error"}:
-            code = error["error"]
-            if isinstance(code, str) and code in RENDER_FAILURES:
-                return "dim_render_" + code
-    return "dim_render_failed"
+@dataclass
+class RenderTicket:
+    ticket: str
+    format: str
+    width: int
+    height: int
+    started: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -64,13 +62,13 @@ class RunLease:
     calls: int = 0
     selected: bool = False
     candidate: Reply | None = None
+    pending: RenderTicket | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class AgentBridge:
-    def __init__(self, access: AccessPolicy, tools: ToolRuntime | None, *, enabled: bool = False):
+    def __init__(self, access: AccessPolicy, *, enabled: bool = False):
         self.access = access
-        self.tools = tools
         self.enabled = enabled
         self.leases: dict[str, RunLease] = {}
 
@@ -90,14 +88,7 @@ class AgentBridge:
             raise DimError("dim_lease_expired")
         if not self.access.group_allowed(lease.context.group_id):
             raise DimError("dim_group_revoked")
-        if render and (
-            not self.enabled
-            or not self.tools
-            or not self.tools.sandbox
-            or not self.tools.base_allowed(lease.context)
-            or not self.access.feature_allowed(lease.context.group_id, "sandbox")
-            or not self.access.image_allowed(lease.context)
-        ):
+        if render and (not self.enabled or not self.access.image_allowed(lease.context)):
             raise DimError("dim_visualization_not_allowed")
 
     def tool_names(self, context: ToolContext) -> list[str]:
@@ -108,16 +99,36 @@ class AgentBridge:
         except DimError:
             return ["fullish_reply"]
 
+    @staticmethod
+    def rendered(lease: RunLease, ticket: RenderTicket, code: str = "") -> None:
+        emit(
+            "agent.render.result",
+            run_id=lease.run_id,
+            render=lease.renders,
+            execution="dim-plugin",
+            format=ticket.format,
+            width=ticket.width,
+            height=ticket.height,
+            outcome="failed" if code else "completed",
+            error_code=code,
+            elapsed_ms=elapsed_ms(ticket.started),
+        )
+
     async def invoke(self, session_id: str, name: str, arguments: dict) -> dict:
         lease = self.leases.get(session_id)
         if lease is None:
             raise DimError("dim_run_not_bound")
         async with lease.lock:
             self.check(lease)
-            lease.calls += 1
-            if lease.calls > 12 or lease.selected:
+            if lease.selected:
                 raise DimError("dim_tool_budget_or_finalized")
+            if name in {"fullish_reply", "visualize_begin"}:
+                lease.calls += 1
+                if lease.calls > 12:
+                    raise DimError("dim_tool_budget_or_finalized")
             if name == "fullish_reply":
+                if lease.pending:
+                    raise DimError("dim_render_in_progress")
                 if set(arguments) - {"text", "artifact_id"}:
                     raise DimError("dim_invalid_candidate")
                 text, artifact_id = arguments.get("text", ""), arguments.get("artifact_id", "")
@@ -137,85 +148,75 @@ class AgentBridge:
                     lease.candidate = text.strip() or None
                 lease.selected = True
                 return {"content": [{"type": "text", "text": "候选已登记，尚未投递。结束本轮。"}]}
-            if name != "visualize_render":
+            self.check(lease, render=True)
+            if name == "visualize_begin":
+                if lease.pending:
+                    raise DimError("dim_render_in_progress")
+                if lease.renders >= 2:
+                    raise DimError("dim_render_budget")
+                if set(arguments) != {"format", "source_bytes", "width", "height"}:
+                    raise DimError("dim_invalid_render")
+                format_name, size = arguments["format"], arguments["source_bytes"]
+                width, height = arguments["width"], arguments["height"]
+                if (
+                    not isinstance(format_name, str)
+                    or format_name not in {"svg", "mermaid", "html"}
+                    or type(size) is not int
+                    or not 0 < size <= 48000
+                    or type(width) is not int
+                    or type(height) is not int
+                    or not 240 <= width <= 2400
+                    or not 160 <= height <= 2400
+                    or width * height > 4_000_000
+                ):
+                    raise DimError("dim_invalid_render")
+                lease.renders += 1
+                ticket = RenderTicket(uuid.uuid4().hex, format_name, width, height)
+                lease.pending = ticket
+                return {"protocol": 2, "ticket": ticket.ticket, "render": lease.renders}
+            if name not in {"visualize_check", "visualize_complete", "visualize_failed"}:
                 raise DimError("dim_tool_unavailable")
-            self.check(lease, render=True)
-            if lease.renders >= 2:
-                raise DimError("dim_render_budget")
-            if set(arguments) - {"format", "source", "width", "height"}:
-                raise DimError("dim_invalid_render")
-            source, format_name = arguments.get("source"), arguments.get("format")
-            width, height = arguments.get("width", 1200), arguments.get("height", 800)
-            if (
-                not isinstance(source, str)
-                or not 0 < len(source.encode()) <= 48000
-                or not isinstance(format_name, str)
-                or format_name not in {"svg", "mermaid", "html"}
-                or type(width) is not int
-                or type(height) is not int
-                or not 240 <= width <= 2400
-                or not 160 <= height <= 2400
-                or width * height > 4_000_000
-            ):
-                raise DimError("dim_invalid_render")
-            lease.renders += 1
-            started = time.monotonic()
-            assert self.tools and self.tools.sandbox
-            self.tools.charge(lease.context)
-            stem = f"visualize_{lease.run_id}_{lease.renders}"
-            input_path, output_path = stem + ".source", stem + ".png"
-            await self.tools.file_request(
-                "/files/write",
-                lease.context,
-                path=input_path,
-                data=base64.b64encode(source.encode()).decode(),
-            )
-            self.check(lease, render=True)
-            # Only validated enums, dimensions and host-created IDs enter the command.
-            command = (
-                f"/usr/local/bin/fullish-render {format_name} /workspace/{input_path} "
-                f"/workspace/{output_path} {width} {height}"
-            )
-            response = await self.tools.sandbox.post(
-                "/exec",
-                json={
-                    "group_id": lease.context.group_id,
-                    "sender_id": lease.context.sender_id,
-                    "message_id": lease.context.message_id,
-                    "command": command,
-                    "timeout_seconds": 30,
-                },
-            )
-            response.raise_for_status()
-            result = response.json()
-            self.check(lease, render=True)
-            failed = result.get("exit_code") != 0 or result.get("timed_out") or "error" in result
-            code = render_failure(result) if failed else ""
-            emit(
-                "agent.render.result",
-                run_id=lease.run_id,
-                render=lease.renders,
-                format=format_name,
-                width=width,
-                height=height,
-                outcome="failed" if failed else "completed",
-                error_code=code,
-                elapsed_ms=elapsed_ms(started),
-            )
-            if failed:
-                raise DimError(code)
-            downloaded = json.loads(
-                await self.tools.invoke(
-                    "sandbox_download",
-                    json.dumps({"path": output_path}),
-                    lease.context,
-                    images=lease.images,
+            ticket = lease.pending
+            if ticket is None or arguments.get("ticket") != ticket.ticket:
+                raise DimError("dim_render_ticket_invalid")
+            if name == "visualize_check":
+                if set(arguments) != {"ticket"}:
+                    raise DimError("dim_invalid_render")
+                return {"protocol": 2}
+            if name == "visualize_failed":
+                if set(arguments) != {"ticket", "error"}:
+                    raise DimError("dim_invalid_render")
+                raw = arguments["error"]
+                code = (
+                    raw if isinstance(raw, str) and raw in RENDER_FAILURES else "dim_render_failed"
                 )
-            )
-            self.check(lease, render=True)
-            if not downloaded.get("ok"):
-                raise DimError("dim_artifact_download_failed")
-            asset = lease.images.get(downloaded["data"]["image_id"])
+                lease.pending = None
+                self.rendered(lease, ticket, code)
+                return {"isError": True, "content": [{"type": "text", "text": code}]}
+            if set(arguments) != {"ticket", "png"}:
+                raise DimError("dim_invalid_render")
+            # Consume a matching completion once, including malformed PNG submissions.
+            lease.pending = None
+            encoded = arguments["png"]
+            if (
+                not isinstance(encoded, str)
+                or not 0 < len(encoded) <= (MAX_ASSET_BYTES + 2) // 3 * 4
+            ):
+                raise DimError("dim_invalid_png")
+            try:
+                body = base64.b64decode(encoded, validate=True)
+            except ValueError:
+                raise DimError("dim_invalid_png") from None
+            if (
+                len(body) < 24
+                or len(body) > MAX_ASSET_BYTES
+                or body[:8] != b"\x89PNG\r\n\x1a\n"
+                or struct.unpack(">II", body[16:24]) != (ticket.width, ticket.height)
+            ):
+                raise DimError("dim_invalid_png")
+            asset = lease.images.add(body)
+            lease.pending = None
+            self.rendered(lease, ticket)
             return {
                 "content": [
                     {
@@ -228,33 +229,25 @@ class AgentBridge:
                             },
                             ensure_ascii=False,
                         ),
-                    },
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "mediaType": asset.media_type,
-                            "data": base64.b64encode(asset.body).decode(),
-                        },
-                    },
+                    }
                 ]
             }
 
 
 def bridge_app(bridge: AgentBridge, token: str) -> FastAPI:
-    """Mount only on the private plugin transport; never on Fullish's public routes."""
+    """Authorization/candidate transport only; no execution or filesystem commands."""
     if len(token) < 32:
         raise ValueError("A private bridge token (32+ characters) is required")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-    @app.post("/invoke")
-    async def invoke(request: Request) -> dict:
+    async def receive(request: Request, *, complete: bool) -> dict:
         if not hmac.compare_digest(request.headers.get("authorization", ""), "Bearer " + token):
             raise HTTPException(403)
+        limit = 14 * 1024 * 1024 if complete else 200_000
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
-            if len(body) > 200_000:
+            if len(body) > limit:
                 raise HTTPException(413)
         try:
             data = json.loads(body)
@@ -264,14 +257,21 @@ def bridge_app(bridge: AgentBridge, token: str) -> FastAPI:
                 or not isinstance(data["session_id"], str)
                 or not isinstance(data["name"], str)
                 or not isinstance(data["arguments"], dict)
+                or (data["name"] == "visualize_complete") != complete
             ):
                 raise ValueError()
             return await bridge.invoke(data["session_id"], data["name"], data["arguments"])
         except (ValueError, DimError) as error:
             code = str(error) if isinstance(error, DimError) else "dim_invalid_request"
             return {"isError": True, "content": [{"type": "text", "text": code}]}
-        except (httpx.HTTPError, TimeoutError, ToolError):
-            return {"isError": True, "content": [{"type": "text", "text": "dim_tool_failed"}]}
+
+    @app.post("/invoke")
+    async def invoke(request: Request) -> dict:
+        return await receive(request, complete=False)
+
+    @app.post("/render-complete")
+    async def complete(request: Request) -> dict:
+        return await receive(request, complete=True)
 
     return app
 

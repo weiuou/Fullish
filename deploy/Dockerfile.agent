@@ -1,15 +1,30 @@
 # syntax=docker/dockerfile:1.7
 FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS certificates
-FROM node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f
-# The native MCP HTTP client needs a system trust store even for API-key-only sessions.
-COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+FROM node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f AS dependencies
 WORKDIR /opt/fullish-agent
 COPY deploy/agent/package.json deploy/agent/package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev
 WORKDIR /opt/fullish-plugin
 COPY plugins/visualize/package.json plugins/visualize/package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev
-COPY plugins/visualize/index.ts plugins/visualize/dim-plugin.json plugins/visualize/defaults.json ./
+WORKDIR /opt/fullish-plugin/renderer
+COPY plugins/visualize/renderer/package.json plugins/visualize/renderer/package-lock.json ./
+RUN npm ci --ignore-scripts --omit=dev
+
+FROM node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ARG CHROMIUM_VERSION=156.0.8078.79-1~deb12u1
+ARG NOTO_CJK_VERSION=1:20220127+repack1-1
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install --no-install-recommends -y \
+        "chromium=$CHROMIUM_VERSION" "fonts-noto-cjk=$NOTO_CJK_VERSION" \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=dependencies /opt/fullish-agent /opt/fullish-agent
+COPY --from=dependencies /opt/fullish-plugin /opt/fullish-plugin
+WORKDIR /opt/fullish-plugin
+COPY plugins/visualize/index.ts plugins/visualize/render-service.mjs plugins/visualize/dim-plugin.json plugins/visualize/defaults.json ./
+COPY plugins/visualize/renderer/render.mjs ./renderer/render.mjs
 COPY plugins/visualize/guides ./guides
 COPY plugins/visualize/skills ./skills
 COPY deploy/agent/launch.mjs /opt/fullish-agent/launch.mjs

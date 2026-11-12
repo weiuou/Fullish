@@ -1,111 +1,78 @@
 # Dim 与 visualize 接入及验证
 
-状态：首版已合并部署，进入显式单群试运行。日期：2026-11-12。设计与后续范围见 [开发路径](agent-runtime-plan.md)，接口与存储设计记录于 [Issue #43](https://github.com/weiuou/Fullish/issues/43)，绘图需求见 [Issue #42](https://github.com/weiuou/Fullish/issues/42)。
+状态：直接渲染实现进入发布验证，尚未切换生产。日期：2026-11-12。接口与迁移设计见 [Issue #48](https://github.com/weiuou/Fullish/issues/48)，排版回归见 [Issue #46](https://github.com/weiuou/Fullish/issues/46)，后续范围见 [开发路径](agent-runtime-plan.md)。旧版沙箱渲染曾完成单群试运行，其结果仅作为[历史证据](archive/2026-11-12-agent-sandbox-runtime.md)。
 
 ## 已实现的接入结构
 
-Fullish 可以为显式列出的群选择 Dim 回复后端。每个被叫到的消息建立独立任务会话，输入使用现有群上下文；Dim 输出经 Fullish 的公共发送服务确认后才记入群历史。新后端关闭额外的表达后处理。其他群沿用原后端。
+Fullish 为 `DIM_ALLOWED_GROUPS` 中的具体群选择 Dim 回复后端，每条被叫到的消息建立独立任务会话。Dim 使用固定 `dimcode-alpha@0.1.0-alpha.20` 原生 App Server v3，rutis 插件 SDK/runtime 固定 `0.19.3`，visualize 插件版本为 `0.2.0`。Fullish 保留群上下文、身份、权限、队列和最终投递确认；Dim 群关闭额外的表达后处理。
 
-首版固定 `dimcode-alpha@0.1.0-alpha.20`、原生协议 v3，插件 SDK/runtime 固定 `0.19.3`。选择原生 App Server 协议的原因是固定版本 ACP 创建请求不能直接设置本方案需要的工具白名单与 system prompt；没有维护第二套生产控制协议。
+`visualize_render` 是实际执行绘图的 rutis 工具：插件在专用 Dim companion 内创建私有临时目录，直接调用 Chromium 渲染 SVG、Mermaid 或 HTML，返回真实 PNG 给模型检查，结束时删除临时文件。Fullish 不执行绘图源码，也不为该工具调用 `ToolRuntime`、群沙箱或 broker。通用沙箱仍按原配置独立运行。
 
-插件在受保护的本地通道上调用 Fullish，真实群身份由运行授权绑定。它能读取绘图指南、请求离线渲染、查看 PNG 并登记最终候选。Fullish 负责把候选送给 QQ；插件登记成功不代表发送成功。一次任务最多两次渲染；原生模型循环、任务时间和桥接调用也有上限。
+插件先通过私有桥接请求一次绘图票据，Fullish 绑定 run/session、真实群和事件，并检查聊天与图片权限；随后只接收该票据对应的一次有界 PNG。接受图片、选择最终候选和实际投递前均重新核对权限。模型不能传群身份、宿主机路径、浏览器启动选项或任意命令。图片产物只属于本轮；`fullish_reply` 登记候选，由公共发送服务获得 QQ 确认后才写历史。
 
-顶层 SVG 使用块布局，避免满画布 SVG 和纵向 Mermaid 的内联基线被误判为越界，见 [修复设计 #46](https://github.com/weiuou/Fullish/issues/46)。实际内容溢出仍被拒绝。渲染失败仅向插件传回固定白名单错误码，例如 `dim_render_canvas_content_clipped`、`dim_render_external_resource_rejected` 或 `dim_render_timeout`，便于剩余一次机会内修正。未知输出仍返回 `dim_render_failed`；关联日志只记录 run、格式、画布尺寸、耗时与安全错误码，不记录源码或原始浏览器异常。
+每任务最多两次绘图，桥接候选/绘图请求最多 12 次；单次渲染最多 25 秒，总任务仍为 90 秒。原生模型开始事件超过 16 次会撤销运行并请求停止，这不是精确计费配额。每次模型输出上限为 8192 tokens。取消会撤销桥接授权；插件关闭浏览器、清理临时目录，专用看门狗负责停止超期或失去控制端的会话。无法确认停止的执行标为不明，不自动重跑。
 
-Fullish 的任务时限为 90 秒，桥接最多 12 次调用、2 次渲染。模型开始事件超过 16 次时撤销运行并请求停止；这是观察后的停止门槛，可能已有请求在途，不是精确的计费配额。专用 companion 的独立看门狗读取不含预览的会话目录，停止创建超过 90 秒或失去控制端超过 2 秒的运行会话；控制通道失效或停止不能确认时终止专用 daemon。它不恢复或重投任务。单次模型输出配置上限为 8192 tokens；模型实际报告的 token 数、请求数和渲染数进入关联元数据日志，不记录提示词和图片。
+根 SVG 使用块布局，修复满画布 SVG 和纵向 Mermaid 的基线溢出误判；真实溢出仍拒绝。错误只返回固定代码，如 `dim_render_canvas_content_clipped`、`dim_render_external_resource_rejected`、`dim_render_timeout`，未知错误为 `dim_render_failed`。关联日志只记录运行、格式、尺寸、耗时和安全错误码，不记录源码或浏览器原始异常。
 
-最小运行登记位于 `GROUP_CONTROL_DIR/agent-runs.sqlite3`。它只保存事件摘要、run/session 和执行/投递状态，不保存可重放的文字或图片。相同事件重投不会再次执行，重启后的未决运行与投递标为不明。启动时清理超过七天的已知终态记录，未决记录不自动过期；该登记不提供自动任务恢复或补发。
+最小运行登记位于 `GROUP_CONTROL_DIR/agent-runs.sqlite3`，只保存事件摘要、run/session 与执行/投递状态；不保存可重放内容。相同事件不再次执行，重启后的未决运行标为不明。已知终态保留七天，未决记录不自动过期，不提供自动补发。
 
 ## 当前验证证据
 
-| 层次 | 结果 | 说明 |
-| --- | --- | --- |
-| 固定 Dim 原生协议 | 已通过本地探针 | 真实 Windows 二进制与认证 named pipe；本地模拟模型，无付费调用 |
-| Dim 插件与最终候选 | 已通过本地探针 | 真实 rutis 插件、受限工具集合和私有 HTTP 桥接 |
-| 完整渲染与修正 | 已通过本地探针 | 真实 Dim/插件/浏览器，两次渲染；真实 PNG 到达模型请求，最终字节回到 Fullish；broker 为外部模拟边界 |
-| 群聊与投递语义 | 已有模拟回放 | 确认后记历史、撤权、重启去重、取消与跨会话产物拒绝 |
-| Linux Dim 容器 | 已通过本地探针与 CI | 真实 alpha.20、私有 Unix RPC、插件、候选登记、隐藏 exec 拒绝；本地还验证超时/断开控制端会话停止；断网、只读根目录、512 MiB/128 PIDs |
-| 渲染容器及 rootless gVisor | 独立渲染与完整链路均已通过 | [真实 rootless 检查](https://github.com/weiuou/Fullish/actions/runs/43199980883/job/131121089720) 验证 1 GiB/128 PIDs、三种中文图、拒绝外部/文件资源和溢出、浏览器清理；同次场景使用真实 Dim、私有 Unix 桥接和 broker，模型收到两次真实 PNG，模拟 QQ 确认后仅记一条历史 |
-| 发布前后探针 | 已通过隔离环境验收 | 同一 [完整链路检查](https://github.com/weiuou/Fullish/actions/runs/43199980883/job/131121089720) 执行真实 preflight/postflight，确认不增加模型调用或 QQ 发送；部署事务另覆盖门禁失败和回滚 |
-| 实际模型与 QQ 受控验收 | 已通过一次真实试验 | 真实 `gpt-6-luna`、Dim、私有桥接、gVisor 两次渲染及 QQ 图文回执；以部署验收输入进入真实内部服务，经已授权群的主动通知出口发送 |
-| 实群持续观察 | 单群试运行中 | 继续观察正常群消息触发、排版、费用、耗时及并发余量；一次受控验收不代表长期稳定性 |
+| 层次 | 结果与边界 |
+| --- | --- |
+| 原生协议与插件 | 真实 Windows alpha.20、受保护 named pipe、rutis 原生工具与 `visualize.probe` 已通过 |
+| 直接浏览器 | 真实 Chromium 生成三种中文 PNG，拒绝远程/文件子资源与溢出；取消后目录回收且可继续绘图 |
+| 完整内部链路 | 真实 Dim、插件、浏览器、Fullish 授权/媒体/投递服务；两次真实 PNG 到达模型请求，最终图片字节一致，模拟 QQ 确认后只记一条回复 |
+| Linux 镜像与发布门禁 | CI 验证真实 companion、私有 Unix RPC、1 GiB/128 PIDs 与无 broker 的完整流程；以候选提交对应 CI 结果为准 |
+| 实际模型与 QQ | 新直接渲染版尚待受控上线验收；旧沙箱版本的成功不代表新版本通过 |
 
-验收版本源码为 `d3910d14999119c37d61d5d52139dfa29b81eab3`。Windows x64 二进制 SHA-256 为 `d5bda3496bd6782f574ae7446158c16731829d32e8bfb63fab150f48ea544d25`；Linux x64 为 `93da59c424cdc421a9079d38478c817e6226376eabdea23418140c3cbe042c3c`，见 [Linux 原生 runtime 与启动器验收](https://github.com/weiuou/Fullish/actions/runs/43198230644/job/131114976890)。摘要按平台分别记录，不能跨平台沿用。
-
-### 2026-11-12 单群试运行记录
-
-[PR #44](https://github.com/weiuou/Fullish/pull/44) 合并为 `915e712115fa38340b882de0b4e353774d67d3cc`，经 [主分支发布流程](https://github.com/weiuou/Fullish/actions/runs/43217958149) 部署。仅将既有部署汇报群列入 `DIM_ALLOWED_GROUPS`；群策略已允许聊天、图片和沙箱，未增加其他群授权。
-
-专用 companion 使用 `gpt-6-luna`。首次使用既有 `gemini-3.8-flash-high` 的完整绘图试验达到 90 秒上限后停止，未发送 QQ，检查确认没有活跃 session 残留；随后用已有备用模型进行独立的受控试验。模型配置与旧后端独立，90 秒预算继续生效。
-
-成功试验使用明确标记的部署验收输入，经 `ConversationService`、真实 Dim/插件和实际沙箱生成中文流程图，进行一次配色修正，再经 `SendingService` 和真实 QQ 主动通知回执确认。共 5 次模型请求、2 次渲染，至 QQ 确认约 70.6 秒；只在确认后记录一条回复历史。输出为 1200 × 440 PNG，14925 字节，SHA-256 为 `7939cce679cf70cdb678d44dca3e7cb05f6064678d461772c559363b252fedd9`。这项试验未伪造 QQ 入站事件；正常群聊触发与持续质量仍属试运行观察。
-
-![真实 Dim 与 QQ 受控验收生成的中文流程图](assets/visualize-live.png)
-
-部署主镜像为 `ghcr.io/weiuou/fullish@sha256:90618f9de84113fc3c599205cfa38a39fb66b77ab4a615851d3b18c459ebae3a`。专用镜像在服务器从同一固定源码构建并按摘要使用：agent 为 `fullish.local/agent@sha256:6760ce2fe965c9a1ce8f2291d85f67bf768c37365089e76cd907aca581a264fc`，可视化 worker 为 `sha256:224cd5b803e7ac053a917fb18322243e59f7f5a2881c5e7664982b43daa0dda0`。`fullish.local` 为本机镜像命名，不能从外部仓库拉取；后续维护须保留本机镜像及固定源码，或先发布到可用仓库再更换摘要。源文件、运维备份和安全验收元数据保存在服务器私有 rollout 目录，凭证与群标识不进入仓库。
+模型与 QQ fixture 属于外部模拟边界，不证明生产模型、真实 QQ 或长期稳定性。旧版验收与固定二进制摘要保存在上述历史记录。
 
 ## 本地开发与探针
-
-使用 Python/uv 的版本约束执行：
 
 ```sh
 uv sync --locked --group deploy
 npm ci --ignore-scripts --prefix plugins/visualize
 npm ci --ignore-scripts --prefix plugins/visualize/renderer
 uv run --locked python scripts/probe_dim.py --executable /absolute/path/to/dimcode
-uv run --locked python scripts/probe_dim_plugin.py --executable /absolute/path/to/dimcode
+uv run --locked python scripts/probe_dim_plugin.py --executable /absolute/path/to/dimcode --browser /absolute/path/to/chromium
+FULLISH_CHROMIUM=/absolute/path/to/chromium node --test plugins/visualize/render-service.test.mjs
 ```
 
-`--executable` 指向原生二进制而非 PowerShell/npm 启动脚本。探针创建临时独立 home、工作区与模拟模型，只使用合成输入，退出时关闭并回收自己启动的 daemon。可用 `--output` 把包含合成 Timeline 的诊断报告保存到 `.state/`，不要用这套 fixture 接收真实群聊。
+`--executable` 指向原生二进制。探针创建独立临时 home、模拟模型和 QQ，只用合成输入，退出时回收自己的 daemon。`--output` 可保存合成诊断到 `.state/`，不可接收真实群聊。
 
-在隔离 Linux 验收环境中，`probe_dim_plugin.py --sandbox-group <已授权测试群>` 使用真实 broker 与私有 Unix 插件桥接，把真实 Dim、两次渲染、模型看图和模拟 QQ 确认串在同一流程中。它不会自行启用群权限或证明宿主机隔离；CI 在此前独立核对 rootless gVisor 与真实宿主机限制。模型和 QQ 仍是合成 fixture。
-
-增加 `--browser /absolute/path/to/chromium` 时，插件探针通过模拟 broker 调用真实本地渲染器，验证看图、同轮修正一次、最终 PNG、公共发送服务与模拟 QQ 确认后的历史。这项检查明确不证明 gVisor 隔离。renderer 的独立测试为：
-
-```sh
-cd plugins/visualize/renderer
-FULLISH_CHROMIUM=/absolute/path/to/chromium node --test render.test.mjs
-```
+隔离 Linux Docker 环境使用 `sudo env FULLISH_DIRECT_AGENT_CI=1 node tests/direct_agent_integration.mjs fullish:ci fullish-agent:integration-ci`，串起真实 companion、两次绘图、模型看图、模拟 QQ 确认及真实部署 preflight/postflight，不挂载 broker。部署探针通过受保护的本地管理方法 `visualize.probe` 执行固定六个案例，不开放任意源码参数，不调用模型或 QQ。
 
 ## 部署与试运行配置
 
-以下文件和命令已通过隔离环境检查及首次单群部署；每次换目标机器或镜像，仍须核对资源余量、私有挂载、群授权和真实模型及 QQ 行为。
-
 ```sh
-docker build -f deploy/Dockerfile.agent -t fullish-agent:local .
-docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sandbox:visualization .
+docker build -f deploy/Dockerfile.agent -t fullish-agent:verified .
 ```
 
-普通沙箱仍是默认构建目标。渲染镜像预装 Node、Chromium、中文字体、Mermaid 和 Playwright，运行时断网；源文件与输出有大小、像素、路径及时间限制。HTML/SVG 的页面脚本关闭，Mermaid 使用受限 DSL 和严格模式，远程与文件子资源被拒绝。
+agent 镜像预装固定 Node、Chromium、Noto CJK、Mermaid 和 Playwright。专用 companion 使用 UID/GID 10001、只读根目录、128 MiB 临时目录、1 核、1 GiB 内存、128 PIDs、无 swap，移除 capabilities 并启用 no-new-privileges；不持有 Docker socket 或 bot 数据库。Linux Chromium 在该普通容器内关闭内层 sandbox，不提供旧 gVisor 绘图隔离保证；这是本次直接渲染的部署边界。页面远程/文件请求仍拒绝，HTML/SVG 脚本关闭，Mermaid 使用严格模式。浏览器只继承最小环境，不继承模型密钥、桥接 token 或 Dim home。
 
-渲染镜像声明独立的资源配置：1 核、1 GiB 内存、128 PIDs、无 swap；普通镜像仍为 512 MiB/64 PIDs。Chromium 保留正常进程模型与内层沙箱，Linux CLI 只接受 Fullish worker 的 PID 命名空间。broker 从维护者指定的固定镜像读取配置，同时检查 Docker 和真实宿主机 cgroup；群消息不能扩大限制。该配置、完整 agent 链路及发布前后探针均已通过上述真实 gVisor 检查。
+agent 为访问 CPA 使用宿主机网络，仅打开私有 Unix RPC，没有公网监听。维护者部署前检查 bot、CPA、Dim 和既有通用沙箱的共同峰值；直接绘图不增加群沙箱实例。
 
-切换渲染镜像前，先安装本分支的 `scripts/sandbox-runtime-setup.sh` 所用 OCI 适配器与 `scripts/sandbox-setup.sh` 所用 broker，再按原流程安装新的沙箱镜像 digest。旧适配器不能承载新增配置；应保持部署门禁失败并继续原 sender，不临时放开限制。部署前测量 bot、CPA、Dim 与最多两组沙箱的共同峰值，单个渲染任务仍按 90 秒交互预算运行。
+按 [Compose 覆盖文件](../deploy/compose.agent.yaml) 准备独立 home、工作区和 RPC 卷，以及 `agent.env`（参考[模板](../deploy/agent.env.example)）。`agent-secrets/model-key` 和 `agent-secrets/bridge-token` 为 UID/GID 10001 所有的 `0600` 普通文件，bridge token 至少 32 字符。bot 只挂载 bridge token；凭证不进入仓库或命令参数。
 
-使用独立的 [Compose 覆盖文件](../deploy/compose.agent.yaml) 加入 agent；它只挂载独立 home、任务工作区、RPC 目录与两份所需凭证，不挂载 bot 控制数据库、钱包或宿主机目录。服务使用 UID/GID 10001，与 bot 通过同 UID 的私有 socket 通信；容器文件系统仍分离。CPA 经宿主机回环地址访问，agent 不开放 WebSocket 或公网服务。
-
-维护者在部署目录准备 `agent.env`（参考 [模板](../deploy/agent.env.example)）和私有 `agent-secrets/model-key`、`agent-secrets/bridge-token`。bridge token 至少 32 字符，凭证为 UID/GID 10001 所有的 `0600` 普通文件；bot 只挂载 bridge token。真实值不进入仓库、Compose 环境文本或命令参数。
-
-在 bot 的既有私有 `runtime.env` 中显式设置：
+在既有私有 `runtime.env` 中设置：
 
 ```dotenv
 AGENT_BACKEND=dim
 DIM_ALLOWED_GROUPS=your-explicit-test-group
-SANDBOX_VISUALIZATION=true
+DIM_VISUALIZATION=true
 ```
 
-`compose.agent.yaml` 提供固定 `DIM_ENDPOINT`、`DIM_WORKSPACE_ROOT`、`DIM_BRIDGE_SOCKET` 和 `DIM_BRIDGE_TOKEN_FILE`。测试群仍须通过原群策略允许聊天、沙箱和图片。Dim 第一版仅接受具体群清单，不接受 `*`。仅文字后端可以关闭 `SANDBOX_VISUALIZATION`，不启动可视化桥接。
+群只需允许聊天和图片，绘图不读取沙箱开关。`DIM_ALLOWED_GROUPS` 不接受 `*`。`DIM_VISUALIZATION=false` 保留文字后端；旧 `SANDBOX_VISUALIZATION` 仅在新变量未设置时作为迁移别名。健康响应使用 `dim_visualization_enabled`。
 
-维护者需显式把覆盖文件安装到既有部署目录，在 `agent-image` 文件保存经过核对的不可变 agent 镜像 digest，并预先启动该 companion。新版 `scripts/deploy.sh` 发现覆盖文件后将其加入每次 Compose 操作；不会自行安装它或替换其中的镜像版本。普通 bot 镜像更新不负责下载新 agent 依赖或升级沙箱镜像。
+维护者显式安装覆盖文件，在 `agent-image` 保存核对过的不可变镜像 digest，并同步升级 companion、bot 和部署脚本。旧插件桥接协议与新版本不兼容：先暂停新绘图、排空在途任务，再更换 companion，运行候选镜像 preflight 后切换 bot，最后启用新变量。普通 bot 发布不会下载新 agent 镜像或替换服务器 Compose。保留旧镜像和配置以便协调回退。
 
-启用 Dim 时，发布在停止旧 bot 前运行 `python -m fullish.agents.check --preflight`，新 bot 启动后再次执行不带参数的检查。它验证固定版本、插件状态和已授权群的 SVG/Mermaid/HTML 真实沙箱 PNG 取回；后置检查还验证私有桥接拒绝未绑定 session。检查不调用模型或 QQ。失败会阻止替换或触发原有回滚，不记录健康发布。没有授权绘图的群时明确报告零次绘图检查，不能把该结果当作该群已获绘图能力。
+`python -m fullish.agents.check --preflight` 在停止旧 bot 前检查固定版本、插件和直接浏览器；新 bot 启动后再次检查，并确认私有桥接拒绝未绑定 session。没有可绘图的已授权群时明确报告零绘图检查。失败阻止替换或触发回滚，不计为健康发布。
 
-Dim 的 home 会持久化 Timeline；试运行使用独立私有状态卷，每次任务结束请求关闭并删除对应 session，该动作不等于整个状态卷的安全擦除。扩大开放前仍须固定附件、数据库和备份的保留期限与运维清理规则；不将群聊写进开发者个人 Dim home。
+Dim home 持久化私有 Timeline；每任务结束请求关闭并删除 session，这不等于状态卷安全擦除。扩大开放前仍须确定附件、数据库及备份的保留和清理规则。
 
 ## 停用与恢复边界
 
-先停止接收新 Dim 任务，等待在途完成或撤销授权并确认停止，再将 `AGENT_BACKEND=legacy`。保持 Dim endpoint/运行登记配置时，新路由仍抑制已占用事件，避免切换后端重跑。结果不明的运行只查询和人工核对，不自动提交或补发。取消已尝试绘图的任务时，原生停止确认不能证明 broker 的外部操作也已结束，运行登记保留为不明。
+停止接收新 Dim 任务，等待在途结束或撤销并确认停止，再设置 `AGENT_BACKEND=legacy`。保持运行登记配置时仍抑制已占用事件；结果不明只核对，不自动补发。回退桥接协议时同时恢复 bot、companion 与环境配置；不要只回退其中一个。保留私有状态卷及登记，不把删卷当作回退。
 
-回滚到不认识新运行登记的旧二进制前，先排空并核对未决任务；旧版本没有新增的跨重启去重保证。删除 Compose 覆盖文件之前同步撤销 bot 的 agent 配置，保留私有 home 和登记用于核对。不要把删除持久卷作为普通回退步骤。
-
-持续会话、跨轮改图、公开网页托管和后台 agent 任务仍按 [开发路径](agent-runtime-plan.md) 的后续阶段独立交付。
+跨轮改图、持续会话、网页托管和后台任务仍属于后续阶段。

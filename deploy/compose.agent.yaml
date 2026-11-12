@@ -31,12 +31,14 @@ services:
       - ./agent-secrets/bridge-token:/run/secrets/dim-bridge-token:ro
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
+      - /tmp:rw,noexec,nosuid,size=128m
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    mem_limit: 512m
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1
     pids_limit: 128
     stop_grace_period: 30s
     logging:

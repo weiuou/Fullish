@@ -1,6 +1,6 @@
 ---
 name: fullish-visualize
-description: Draw architecture diagrams, flowcharts and data charts for QQ using the offline group renderer.
+description: Draw architecture diagrams, flowcharts and data charts for QQ directly in the Dim plugin.
 ---
 
 Use `visualize_guide` to read the overview and the relevant guide on demand. Choose SVG for

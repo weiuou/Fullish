@@ -1,9 +1,11 @@
 {
   "name": "fullish-visualize",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "engines": { "node": ">=24.13.0" },
+  "engines": {
+    "node": ">=24.13.0"
+  },
   "dependencies": {
     "@arcships/rutis": "0.19.3",
     "@arcships/rutis-runtime": "0.19.3"

@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -188,114 +187,6 @@ def main() -> None:
     )
     print(run(*candidate, env=environment), flush=True)
     print("PASS daemon restart recovers with enforced limits", flush=True)
-    if len(worker_images) > 1:
-        visualization = run(*docker, "image", "inspect", "--format", "{{.Id}}", worker_images[1])
-        print(run("bash", str(root / "scripts/sandbox-setup.sh"), group, visualization), flush=True)
-        visual_container = json.loads(run(*docker, "inspect", run(*docker, "ps", "-q")))[0]
-        visual_pid = visual_container["State"]["Pid"]
-        assert "gvisor" in Path(f"/proc/{visual_pid}/exe").resolve().name
-        visual_path = next(
-            line[3:]
-            for line in Path(f"/proc/{visual_pid}/cgroup").read_text().splitlines()
-            if line.startswith("0::")
-        )
-        visual_cgroup = Path("/sys/fs/cgroup") / visual_path.lstrip("/")
-        assert int((visual_cgroup / "memory.max").read_text()) == 1024 * 1024 * 1024
-        assert int((visual_cgroup / "memory.swap.max").read_text()) == 0
-        assert int((visual_cgroup / "pids.max").read_text()) == 128
-        print("PASS visualization gVisor has bounded 1 GiB/128 PID host profile", flush=True)
-        # This process reaches the real broker, worker and native browser. It does not call
-        # a model or QQ and never treats a mocked browser as gVisor acceptance.
-        print(
-            run(
-                "python3",
-                str(root / "scripts/visualization-smoke.py"),
-            ),
-            flush=True,
-        )
-        if len(sys.argv) > 3:
-            # This fresh CI host grants image delivery only to its synthetic group. The
-            # probe itself must not grant permissions or bypass a disabled feature.
-            run(
-                "docker",
-                "run",
-                "--rm",
-                "--network",
-                "none",
-                "--user",
-                "0",
-                "--mount",
-                "type=bind,source=/var/lib/fullish-control,target=/control",
-                "--entrypoint",
-                "python",
-                image,
-                "-c",
-                "import os,sys; from pathlib import Path; "
-                "from fullish.policies.groups import GroupPolicies; "
-                "p=Path('/control/policy.json'); "
-                "GroupPolicies(p).change(sys.argv[1], 'image', True); os.chown(p,10001,10001)",
-                group,
-            )
-            with tempfile.TemporaryDirectory(prefix="fullish-dim-integration-") as temporary:
-                staging = Path(temporary)
-                fixture = run("docker", "create", sys.argv[3])
-                try:
-                    for source, target in (
-                        ("/opt/fullish-agent/node_modules", "modules"),
-                        ("/opt/fullish-plugin", "plugin"),
-                        ("/usr/local/bin/node", "node"),
-                    ):
-                        run("docker", "cp", f"{fixture}:{source}", str(staging / target))
-                    mounts = []
-                    for source, target in (
-                        (str(root), "/workspace"),
-                        (str(staging / "modules"), "/opt/fullish-agent/node_modules"),
-                        (str(staging / "plugin"), "/opt/fullish-plugin"),
-                        (str(staging / "node"), "/usr/local/bin/node"),
-                        ("/run/fullish-sandbox", "/run/fullish-sandbox"),
-                        ("/var/lib/fullish-control", "/var/lib/fullish/control"),
-                    ):
-                        mounts.extend(
-                            ["--mount", f"type=bind,source={source},target={target},readonly"]
-                        )
-                    print(
-                        run(
-                            "docker",
-                            "run",
-                            "--rm",
-                            "--network",
-                            "host",
-                            "--read-only",
-                            "--tmpfs",
-                            "/tmp:rw,noexec,nosuid,size=64m",
-                            "--cap-drop",
-                            "ALL",
-                            "--security-opt",
-                            "no-new-privileges:true",
-                            "--pids-limit",
-                            "128",
-                            "--memory",
-                            "512m",
-                            "--env-file",
-                            "/opt/fullish/runtime.env",
-                            "--env",
-                            "GROUP_CONTROL_DIR=/var/lib/fullish/control",
-                            *mounts,
-                            "--entrypoint",
-                            "python",
-                            image,
-                            "/workspace/scripts/probe_dim_plugin.py",
-                            "--executable",
-                            "/opt/fullish-agent/node_modules/dimcode-linux-x64/bin/dimcode",
-                            "--plugin",
-                            "/opt/fullish-plugin",
-                            "--sandbox-group",
-                            group,
-                        ),
-                        flush=True,
-                    )
-                finally:
-                    run("docker", "rm", fixture)
 
 
 if __name__ == "__main__":

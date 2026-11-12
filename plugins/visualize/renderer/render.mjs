@@ -33,7 +33,8 @@ async function workspacePath(root, path, output = false) {
 }
 
 export async function render({ root = '/workspace', input, output, format, width = 1200, height = 800,
-  browser = process.env.FULLISH_CHROMIUM || '/usr/bin/chromium' }) {
+  browser = process.env.FULLISH_CHROMIUM || '/usr/bin/chromium', chromiumSandbox = true, signal }) {
+  if (signal?.aborted) throw Error('render_cancelled');
   if (!FORMATS.has(format)) throw Error('unsupported_format');
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 240 || height < 160
       || width > 2400 || height > 2400 || width * height > MAX_PIXELS) throw Error('canvas_limit');
@@ -41,26 +42,29 @@ export async function render({ root = '/workspace', input, output, format, width
   const outputPath = await workspacePath(root, output, true);
   const source = await readFile(sourcePath, 'utf8');
   if (!source.trim() || Buffer.byteLength(source) > MAX_SOURCE) throw Error('source_too_large');
+  const childEnv = { PATH: process.platform === 'win32' ? process.env.PATH : '/usr/local/bin:/usr/bin:/bin',
+    LANG: 'C.UTF-8', HOME: root,
+    ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {}) };
   if (process.platform === 'linux') {
-    const namespace = await readFile('/proc/1/cmdline', 'utf8');
-    if (namespace !== 'python3\0-I\0/opt/fullish/worker.py\0--idle\0') {
-      throw Error('sandbox_worker_required');
-    }
     try {
       const { stdout } = await promisify(execFile)('/usr/bin/fc-match',
-        ['--format=%{family}', 'Noto Sans CJK SC'], { timeout: 3000 });
+        ['--format=%{family}', 'Noto Sans CJK SC'], { timeout: 3000, env: childEnv });
       if (!stdout.includes('Noto Sans CJK SC')) throw Error('chinese_font_missing');
     } catch { throw Error('chinese_font_missing'); }
   }
   const instance = await chromium.launch({
-    executablePath: browser, headless: true, chromiumSandbox: true,
-    // The optional image has a bounded resource profile; keep Chromium's inner sandbox.
+    executablePath: browser, headless: true, chromiumSandbox,
+    // Browser children never inherit model keys, bridge tokens or the Dim home.
+    env: childEnv,
     args: ['--disable-background-networking', '--disable-component-update', '--disable-sync',
       '--disable-gpu', '--in-process-gpu', '--renderer-process-limit=1', '--num-raster-threads=1',
       '--disable-crash-reporter', '--js-flags=--max-old-space-size=96'],
     timeout: 10_000,
   });
+  const abort = () => { void instance.close().catch(() => {}); };
+  signal?.addEventListener('abort', abort, { once: true });
   try {
+    if (signal?.aborted) throw Error('render_cancelled');
     const context = await instance.newContext({ viewport: { width, height }, deviceScaleFactor: 1,
       // Mermaid's sanitizer needs browser callbacks. Only its strict DSL uses a scripted
       // context; arbitrary HTML/SVG rendering keeps page scripts disabled.
@@ -124,6 +128,7 @@ export async function render({ root = '/workspace', input, output, format, width
     await writeFile(outputPath, image, { flag: 'wx', mode: 0o600 });
     return { format: 'png', bytes: image.length, width, height };
   } finally {
+    signal?.removeEventListener('abort', abort);
     await instance.close();
   }
 }

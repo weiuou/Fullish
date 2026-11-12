@@ -167,10 +167,8 @@ def create_app() -> FastAPI:
         agent_runs.prune()
         bridge = None
         if agent_settings.visualization:
-            if not tools or not tools.sandbox:
-                raise ValueError("Visualize requires the existing sandbox configuration")
             assert agent_settings.bridge_socket and agent_settings.bridge_token_file
-            bridge = AgentBridge(access, tools, enabled=True)
+            bridge = AgentBridge(access, enabled=True)
             agent_bridge_server = BridgeServer(
                 bridge,
                 agent_settings.bridge_socket,
@@ -299,7 +297,7 @@ def create_app() -> FastAPI:
         return {
             "model_configured": model is not None,
             "agent_backend": "dim" if agent_settings and agent_settings.enabled else "legacy",
-            "sandbox_visualization_enabled": bool(agent_settings and agent_settings.visualization),
+            "dim_visualization_enabled": bool(agent_settings and agent_settings.visualization),
             "model": model_settings.model if model_settings else "",
             "fallback_model": model_settings.fallback_model if model_settings else "",
             "model_available": await provider.available() if provider else False,

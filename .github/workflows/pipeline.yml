@@ -106,10 +106,10 @@ jobs:
         run: |
           docker build -f deploy/Dockerfile.sandbox -t fullish-sandbox:ci .
           python3 scripts/sandbox-smoke.py --worker-image fullish-sandbox:ci
-      - name: Build the optional visualization worker
+      - name: Verify direct Dim rendering without a sandbox broker
         run: |
-          docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sandbox:visualization-ci .
           docker build -f deploy/Dockerfile.agent -t fullish-agent:integration-ci .
+          sudo env FULLISH_DIRECT_AGENT_CI=1 node tests/direct_agent_integration.mjs fullish:ci fullish-agent:integration-ci
       - name: Install rootless sandbox test prerequisites
         run: |
           sudo apt-get update
@@ -141,7 +141,7 @@ jobs:
           command -v dockerd-rootless-setuptool.sh
           command -v rootlesskit
       - name: Verify real rootless gVisor, host limits and deployment socket
-        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci fullish-sandbox:visualization-ci fullish-agent:integration-ci
+        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci
       - name: Export the verified image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker save --output fullish-image.tar fullish:ci
@@ -169,19 +169,27 @@ jobs:
         run: |
           docker run --rm --network none --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,size=128m --cap-drop ALL \
-            --security-opt no-new-privileges:true --pids-limit 128 --memory 512m \
+            --security-opt no-new-privileges:true --pids-limit 128 --memory 1g --memory-swap 1g --cpus 1 \
             --mount "type=bind,source=$PWD,target=/workspace,readonly" \
             --entrypoint node fullish-agent:ci /workspace/tests/agent_container_smoke.mjs
       - name: Verify the actual companion launcher and private volumes
         run: |
           docker run --rm --init --network none --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /tmp:rw,noexec,nosuid,size=128m \
             --tmpfs /run/secrets:rw,noexec,nosuid,size=1m,uid=10001,gid=10001,mode=0700 \
             --volume /var/lib/fullish-agent --volume /var/lib/fullish-agent-work \
             --volume /run/fullish-agent --cap-drop ALL --security-opt no-new-privileges:true \
-            --pids-limit 128 --memory 512m \
+            --pids-limit 128 --memory 1g --memory-swap 1g --cpus 1 \
             --mount "type=bind,source=$PWD,target=/workspace,readonly" \
             --entrypoint node fullish-agent:ci /workspace/tests/agent_launch_smoke.mjs
+      - name: Verify direct browser cancellation and cleanup
+        run: |
+          docker run --rm --init --network none --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=128m --cap-drop ALL \
+            --security-opt no-new-privileges:true --pids-limit 128 --memory 1g --memory-swap 1g --cpus 1 \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --env FULLISH_RENDER_MODULE=/opt/fullish-plugin/render-service.mjs \
+            --entrypoint node fullish-agent:ci --test /workspace/plugins/visualize/render-service.test.mjs
 
   publish:
     name: Publish verified image
