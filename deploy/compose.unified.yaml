@@ -27,6 +27,7 @@ services:
       - ./integrated-secrets/bridge-fullish:/run/secrets/dim-bridge-token:ro
       - ./integrated-secrets/bridge-dim:/run/secrets/dim-bridge-token-agent:ro
     cap_add: [SETUID, SETGID]
+    group_add: ["10003"]
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
     mem_limit: 1g

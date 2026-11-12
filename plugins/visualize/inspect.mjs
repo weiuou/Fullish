@@ -43,7 +43,7 @@ export async function inspectSource(args) {
 }
 
 const writable = async path => { try { await access(path, constants.W_OK); return true; } catch { return false; } };
-export async function selfCheck(grant, render, cancelled) {
+export async function selfCheck(grant, render, cancelled, authorize) {
   let diagnostics;
   try {
     const path = resolve(diagnosticsRoot, 'events.json');
@@ -57,6 +57,7 @@ export async function selfCheck(grant, render, cancelled) {
   const fullishWritable = await writable(sourceRoot) || await writable(diagnosticsRoot)
     || await writable('/var/lib/fullish/control') || await writable('/app/.venv');
   const result = { ...grant, dim_uid: process.getuid(), source_readable: Boolean(source.content),
+    fullish_private_group_inherited: process.getgroups().includes(10001),
     fullish_secret_in_environment: Boolean(process.env.QQ_APP_SECRET || process.env.AI_API_KEY
       || process.env.DEEPSEEK_API_KEY || process.env.WALLET_PASSWORD),
     fullish_writable: fullishWritable, diagnostics,
@@ -65,7 +66,13 @@ export async function selfCheck(grant, render, cancelled) {
   const status = await readFile('/proc/self/status', 'utf8');
   result.effective_capabilities = status.match(/^CapEff:\s*([a-f0-9]+)/m)?.[1];
   result.no_new_privileges = status.match(/^NoNewPrivs:\s*(\d+)/m)?.[1] === '1';
-  result.boundary_verified &&= result.effective_capabilities === '0000000000000000' && result.no_new_privileges;
-  if (render) result.renderer = await probeRenderer(cancelled);
+  result.boundary_verified &&= result.effective_capabilities === '0000000000000000'
+    && result.no_new_privileges && !result.fullish_private_group_inherited;
+  result.resources = {};
+  for (const name of ['memory.current', 'memory.max', 'pids.current', 'pids.max', 'cpu.max']) {
+    try { result.resources[name] = (await readFile('/sys/fs/cgroup/' + name, 'utf8')).trim().slice(0, 160); }
+    catch { result.resources[name] = 'unavailable'; }
+  }
+  if (render) result.renderer = await probeRenderer(cancelled, authorize);
   return result;
 }

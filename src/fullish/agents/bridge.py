@@ -16,7 +16,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 
 from fullish.agents.local import unified
-from fullish.agents.rpc import DimError
+from fullish.agents.rpc import DIM_VERSION, DimError
 from fullish.media.assets import MAX_ASSET_BYTES, ImageAssets
 from fullish.policies.access import AccessPolicy
 from fullish.sending import Image, OutgoingMessage, Reply, Text
@@ -129,6 +129,11 @@ class AgentBridge:
             self.check(lease)
             if lease.selected:
                 raise DimError("dim_tool_budget_or_finalized")
+            if name == "fullish_inspection_check":
+                if not self.inspection or not lease.probes or arguments != {"render": True}:
+                    raise DimError("dim_inspection_not_allowed")
+                self.check(lease, render=True)
+                return {"protocol": 3}
             if name in {
                 "fullish_reply",
                 "visualize_begin",
@@ -159,6 +164,8 @@ class AgentBridge:
                         "deployment": "unified" if unified() else "companion",
                         "fullish_uid": os.geteuid() if os.name != "nt" else None,
                         "model": os.environ.get("AI_MODEL", ""),
+                        "dim_model": os.environ.get("DIM_MODEL_ID", ""),
+                        "dim_runtime_version": DIM_VERSION,
                         "permissions": {
                             "chat": True,
                             "image": self.access.image_allowed(lease.context),

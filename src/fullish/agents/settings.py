@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
+from fullish.agents.local import unified
+
 
 @dataclass(frozen=True)
 class AgentSettings:
@@ -57,6 +59,8 @@ class AgentSettings:
         inspection = os.environ.get("DIM_INSPECTION", "false").strip().lower()
         if inspection not in {"true", "false"}:
             raise ValueError("DIM_INSPECTION must be true or false")
+        if inspection == "true" and not unified():
+            raise ValueError("DIM_INSPECTION requires the unified deployment profile")
         bridge_socket = os.environ.get("DIM_BRIDGE_SOCKET", "").strip()
         bridge_token = os.environ.get("DIM_BRIDGE_TOKEN_FILE", "").strip()
         if (visualization == "true" or inspection == "true") and (

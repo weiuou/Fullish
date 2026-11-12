@@ -71,7 +71,10 @@ const parts = definePlugin({
           if (grant.isError) return grant;
           if (grant.protocol !== 3) throw Error('inspection_protocol');
           const value = definition.name === 'fullish_inspect' ? await inspectSource(call.arguments)
-            : await selfCheck(grant.inspection, call.arguments.render === true, cancelled);
+            : await selfCheck(grant.inspection, call.arguments.render === true, cancelled, async () => {
+              const checked = await invoke(call, 'fullish_inspection_check', cancelled, { render: true });
+              if (checked.isError || checked.protocol !== 3) throw Error('inspection_revoked');
+            });
           return { content: [{ type: 'text', text: JSON.stringify(value) }] };
         } catch { return { isError: true, content: [{ type: 'text', text: 'fullish_inspection_failed' }] }; }
       });

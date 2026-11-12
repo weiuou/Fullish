@@ -507,7 +507,7 @@ assert_success
 assert_state "$image_b" "$image_a"
 assert_running "$image_b"
 grep -q -- "--file $FULLISH_ROOT/compose.unified.yaml" "$FAKE_DOCKER_STATE/calls.log" || fail 'unified profile omitted'
-grep -q -- 'exec --user 10001:10003 fake-fullish-bot python -m fullish.agents.check' "$FAKE_DOCKER_STATE/calls.log" || fail 'postflight did not drop identity'
+grep -q -- 'exec --user 10001:10001 fake-fullish-bot python -m fullish.agents.check' "$FAKE_DOCKER_STATE/calls.log" || fail 'postflight did not drop identity'
 pass
 
 new_case unified_rejects_incompatible_image_before_stopping_sender

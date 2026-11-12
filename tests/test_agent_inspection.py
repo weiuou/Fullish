@@ -44,3 +44,31 @@ def test_inspection_works_without_image_permission_and_stops_after_revocation(tm
             await bridge.invoke("session", "fullish_self_check", {})
 
     asyncio.run(replay())
+
+
+def test_render_probe_is_bounded_and_rechecks_authorization_after_queueing(tmp_path):
+    async def replay():
+        group = "g" * 16
+        policies = GroupPolicies(tmp_path / "policy.json")
+        policies.write(
+            {
+                "version": 1,
+                "defaults": {"chat": True, "image": True, "search": False, "sandbox": False},
+                "groups": {},
+            }
+        )
+        bridge = AgentBridge(AccessPolicy(policies=policies), enabled=True, inspection=True)
+        bridge.bind(
+            "b" * 32, "session", ToolContext(group, "member", "event"), time.monotonic() + 30
+        )
+        await bridge.invoke("session", "fullish_self_check", {"render": True})
+        assert await bridge.invoke("session", "fullish_inspection_check", {"render": True}) == {
+            "protocol": 3
+        }
+        with pytest.raises(DimError, match="dim_probe_budget"):
+            await bridge.invoke("session", "fullish_self_check", {"render": True})
+        policies.change(group, "image", False)
+        with pytest.raises(DimError, match="dim_visualization_not_allowed"):
+            await bridge.invoke("session", "fullish_inspection_check", {"render": True})
+
+    asyncio.run(replay())

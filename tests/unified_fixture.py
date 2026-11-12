@@ -10,6 +10,7 @@ from pathlib import Path
 from fullish.telemetry import emit
 
 assert os.environ.get("FULLISH_UNIFIED_CI") == "1" and os.getuid() == 10001
+assert 10001 in os.getgroups()
 control = Path("/var/lib/fullish/control")
 (control / "boundary-sentinel").write_text("synthetic-fullish-private-data")
 (control / "policy.json").write_text(

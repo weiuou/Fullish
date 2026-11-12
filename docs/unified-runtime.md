@@ -48,7 +48,7 @@ docker build --target unified --build-arg APP_REVISION=<源码提交> -t fullish
 
 两份 bridge token 内容相同且至少 32 字符，各由所属进程读取；不要通过放宽旧文件权限共享凭证。使用新的 integrated home/work/RPC/diagnostics 卷，保留旧 companion 卷。运行配置包含 `AGENT_BACKEND=dim`、明确的 `DIM_ALLOWED_GROUPS` 和 `DIM_VISUALIZATION=true`，其他路径由覆盖文件固定。
 
-部署前 `compose run ... python -m fullish.agents.check --preflight` 在自己的临时 home、工作区和 RPC 中启动候选 Dim，不替换活跃实例的 socket，不调用模型或 QQ。发布后的检查和简报 CLI 用 UID 10001/GID 10003 执行。
+部署前 `compose run ... python -m fullish.agents.check --preflight` 在自己的临时 home、工作区和 RPC 中启动候选 Dim，不替换活跃实例的 socket，不调用模型或 QQ。Fullish 保留组 10001 以访问既有 broker 挂载，Dim 不继承该组；发布后的检查和简报 CLI 用 UID/GID 10001 并加入通信组 10003 执行。
 
 ## 首次迁移与回退
 

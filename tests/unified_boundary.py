@@ -6,6 +6,7 @@ from pathlib import Path
 
 assert os.environ.get("FULLISH_UNIFIED_CI") == "1"
 assert os.getuid() == 10002 and os.getgid() == 10003
+assert 10001 not in os.getgroups()
 assert "CapEff:\t0000000000000000" in Path("/proc/self/status").read_text()
 
 

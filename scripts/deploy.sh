@@ -39,7 +39,7 @@ exec_user=()
 if [[ -f $root/compose.unified.yaml ]]; then
     [[ ! -f $root/compose.agent.yaml ]] || die 'Choose one agent deployment profile.'
     compose+=(--file "$root/compose.unified.yaml")
-    exec_user=(--user 10001:10003)
+    exec_user=(--user 10001:10001)
 elif [[ -f $root/compose.agent.yaml ]]; then
     [[ -f $root/agent-image ]] || die 'Agent override requires a reviewed agent-image digest file.'
     FULLISH_AGENT_IMAGE=$(< "$root/agent-image")

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, writeFile, chown, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, chown, chmod, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -42,13 +42,16 @@ const server = createServer(async (req, res) => {
       if (done.includes('fixture-final')) message = { role: 'assistant', content: 'Unused model tail.' };
       else {
         if (!done.includes('fixture-check')) {
-          name = 'fullish_self_check'; id = 'fixture-check'; args = {};
+          name = 'fullish_self_check'; id = 'fixture-check'; args = { render: true };
         } else if (!done.includes('fixture-inspect')) {
           const value = JSON.parse(input.messages.find(item => item.tool_call_id === 'fixture-check').content);
           assert.equal(value.boundary_verified, true);
           assert.equal(value.fullish_uid, 10001);
           assert.equal(value.dim_uid, 10002);
           assert.equal(value.fullish_secret_in_environment, false);
+          assert.equal(value.fullish_private_group_inherited, false);
+          assert.equal(value.resources['pids.max'], '256');
+          assert.equal(value.renderer.protocol, 2);
           assert.ok(JSON.stringify(value.diagnostics).includes('TimeoutError'));
           selfChecked = true;
           name = 'fullish_inspect'; id = 'fixture-inspect';
@@ -86,6 +89,18 @@ const server = createServer(async (req, res) => {
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await copyFile('deploy/compose.yaml', resolve(root, 'compose.yaml'));
+  await copyFile('deploy/compose.unified.yaml', resolve(root, 'compose.unified.yaml'));
+  await writeFile(resolve(root, '.env'), 'FULLISH_IMAGE=' + image + '\n');
+  await writeFile(resolve(root, 'runtime.env'), 'AGENT_BACKEND=dim\n');
+  await writeFile(resolve(root, 'agent.env'), 'DIM_MODEL_ID=fixture\n');
+  const composed = JSON.parse(await docker('compose', '--project-directory', root, '--file', resolve(root, 'compose.yaml'),
+    '--file', resolve(root, 'compose.unified.yaml'), 'config', '--format', 'json'));
+  assert.deepEqual(Object.keys(composed.services), ['bot']);
+  assert.equal(composed.services.bot.network_mode, 'host');
+  assert.equal(composed.services.bot.environment.HOST, '127.0.0.1');
+  assert.ok(!composed.services.bot.ports?.length);
+  assert.equal(composed.services.bot.read_only, true);
   for (const [name, value, uid] of [['model-key', 'synthetic-unified-key', 10002],
     ['bridge-fullish', 'synthetic-unified-bridge-token-123456789', 10001],
     ['bridge-dim', 'synthetic-unified-bridge-token-123456789', 10002]]) {
@@ -96,7 +111,7 @@ try {
   const mount = (name, path) => ['--mount', `type=bind,source=${resolve(root, name)},target=${path},readonly`];
   const common = ['--init', '--network', 'host', '--read-only', '--user', '0:0', '--no-healthcheck',
     '--tmpfs', '/tmp:rw,noexec,nosuid,size=128m', '--cap-drop', 'ALL', '--cap-add', 'SETUID', '--cap-add', 'SETGID',
-    '--security-opt', 'no-new-privileges:true', '--pids-limit', '256', '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
+    '--security-opt', 'no-new-privileges:true', '--group-add', '10003', '--pids-limit', '256', '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
     ...volumes.flatMap((volume, i) => ['--volume', volume + ':' + targets[i]]),
     ...mount('model-key', '/run/secrets/dim-model-key'), ...mount('bridge-fullish', '/run/secrets/dim-bridge-token'),
     ...mount('bridge-dim', '/run/secrets/dim-bridge-token-agent'),
@@ -121,6 +136,11 @@ try {
     await pause(500);
   }
   assert.ok(ready, 'actual Fullish identity starts inside the one-container runtime');
+  await docker('exec', '--user', '10001:10001', prefix, 'python', '-c',
+    ['import os, asyncio', 'from fullish.agents.rpc import DimRPC',
+      'assert 10003 in os.getgroups()', 'async def check():',
+      '    rpc = await DimRPC.connect("/run/fullish-integrated/dim/rpc.sock")',
+      '    await rpc.close()', 'asyncio.run(check())'].join('\n'));
   const inode = async () => (await docker('exec', '--user', '10002:10003', prefix, 'python', '-c',
     "from pathlib import Path; print(Path('/run/fullish-integrated/dim/rpc.sock').stat().st_ino)")).trim();
   const before = await inode();

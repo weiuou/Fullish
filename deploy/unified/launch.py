@@ -59,7 +59,7 @@ def spawn(role: str, args: list[str]) -> subprocess.Popen:
         env=env,
         user=10002 if role == "dim" else 10001,
         group=10003,
-        extra_groups=[],
+        extra_groups=[] if role == "dim" else [10001],
         stdin=subprocess.PIPE,
     )
     roles.append(process)
