@@ -23,7 +23,7 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
 COPY --from=dependencies /opt/fullish-agent /opt/fullish-agent
 COPY --from=dependencies /opt/fullish-plugin /opt/fullish-plugin
 WORKDIR /opt/fullish-plugin
-COPY plugins/visualize/index.ts plugins/visualize/render-service.mjs plugins/visualize/dim-plugin.json plugins/visualize/defaults.json ./
+COPY plugins/visualize/index.ts plugins/visualize/render-service.mjs plugins/visualize/inspect.mjs plugins/visualize/dim-plugin.json plugins/visualize/defaults.json ./
 COPY plugins/visualize/renderer/render.mjs ./renderer/render.mjs
 COPY plugins/visualize/guides ./guides
 COPY plugins/visualize/skills ./skills

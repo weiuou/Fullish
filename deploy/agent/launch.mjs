@@ -1,7 +1,7 @@
 /** Dedicated runtime entrypoint: no bot, wallet, personal-home or arbitrary workspace mounts. */
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, lstat, chmod } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { connectControl, stopExpiredSessions } from './control.mjs';
@@ -14,11 +14,13 @@ const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
 if (version.status !== 0 || version.stdout.trim() !== 'dimcode 0.1.0-alpha.20') {
   throw Error('dim_version_mismatch');
 }
-const endpoint = '/run/fullish-agent/rpc.sock';
+const integrated = process.env.DIM_DEPLOYMENT === 'unified';
+const endpoint = process.env.DIM_ENDPOINT || '/run/fullish-agent/rpc.sock';
 
 async function check() {
   const info = await lstat(endpoint);
-  if (!info.isSocket() || info.uid !== process.getuid() || (info.mode & 0o077)) {
+  if (!info.isSocket() || info.uid !== process.getuid()
+      || (integrated ? info.gid !== 10003 || (info.mode & 0o777) !== 0o660 : info.mode & 0o077)) {
     throw Error('private_agent_socket_required');
   }
   await new Promise((resolve, reject) => {
@@ -60,9 +62,9 @@ async function check() {
 if (process.argv[2] === '--check') {
   await check();
 } else {
-  const home = '/var/lib/fullish-agent';
+  const home = process.env.DIM_HOME || '/var/lib/fullish-agent';
   const modelKey = (await readFile('/run/secrets/dim-model-key', 'utf8')).trim();
-  const bridgeToken = (await readFile('/run/secrets/dim-bridge-token', 'utf8')).trim();
+  const bridgeToken = (await readFile(process.env.DIM_BRIDGE_TOKEN_FILE || '/run/secrets/dim-bridge-token', 'utf8')).trim();
   if (!modelKey || bridgeToken.length < 32) throw Error('agent_credentials_missing');
   const base = new URL(process.env.DIM_MODEL_BASE_URL || 'http://127.0.0.1:8317/v1');
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
@@ -82,8 +84,9 @@ if (process.argv[2] === '--check') {
     '--node', '/usr/local/bin/node', '--js-runtime', '/opt/fullish-plugin/node_modules/@arcships/rutis-runtime'],
   { stdio: 'inherit', env: {
     PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home, LANG: 'C.UTF-8', RUST_LOG: 'error',
+    ...(integrated ? { DIM_DEPLOYMENT: 'unified', TMPDIR: process.env.TMPDIR } : {}),
     FULLISH_AGENT_MODEL_KEY: modelKey, FULLISH_AGENT_BRIDGE_TOKEN: bridgeToken,
-    FULLISH_AGENT_BRIDGE_SOCKET: '/run/fullish-agent/bridge.sock',
+    FULLISH_AGENT_BRIDGE_SOCKET: process.env.DIM_BRIDGE_SOCKET || '/run/fullish-agent/bridge.sock',
   } });
   let stopping = false;
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
@@ -101,7 +104,14 @@ if (process.argv[2] === '--check') {
     const readyBy = Date.now() + 20_000;
     try {
       while (!stopping && !control) {
-        try { control = await connectControl(endpoint); }
+        try {
+          if (integrated) {
+            const info = await lstat(endpoint);
+            if (!info.isSocket() || info.uid !== process.getuid()) throw Error('agent_socket_owner');
+            await chmod(endpoint, 0o660);
+          }
+          control = await connectControl(endpoint);
+        }
         catch {
           if (Date.now() >= readyBy) throw Error('agent_watchdog_start_timeout');
           await pause(200);

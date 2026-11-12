@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
@@ -9,7 +10,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from fullish.settings import DeploymentReportSettings, ModelSettings
-from fullish.telemetry import emit
+from fullish.telemetry import elapsed_ms, emit
 
 SHA_PATTERN = r"^[a-f0-9]{40}$"
 CHUNK_CHARS = 16000
@@ -136,9 +137,28 @@ class DeploymentSummary:
         self.transport = transport
 
     async def complete(self, text: str) -> str:
-        content = await self.model.complete_text(
-            [{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": text}],
-            max_tokens=640,
+        started = time.monotonic()
+        emit(
+            "deployment.report.model.started",
+            model=self.model.settings.model,
+            prompt_chars=len(text),
+        )
+        try:
+            content = await self.model.complete_text(
+                [{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": text}],
+                max_tokens=640,
+            )
+        except BaseException as error:
+            emit(
+                "deployment.report.model.failed",
+                error_type=type(error).__name__,
+                elapsed_ms=elapsed_ms(started),
+            )
+            raise
+        emit(
+            "deployment.report.model.completed",
+            model=self.model.settings.model,
+            elapsed_ms=elapsed_ms(started),
         )
         return content[:1000]
 
@@ -149,8 +169,11 @@ class DeploymentSummary:
         if previous == current:
             summary = "同一版本重新部署，没有新增 commit。"
         else:
+            phase = "history"
+            started = time.monotonic()
             try:
                 async with asyncio.timeout(180):
+                    emit("deployment.report.history.started", previous=previous, current=current)
                     async with httpx.AsyncClient(
                         timeout=20,
                         follow_redirects=False,
@@ -162,6 +185,13 @@ class DeploymentSummary:
                             current if request.rollback and previous else previous,
                             previous if request.rollback and previous else current,
                         )
+                    emit(
+                        "deployment.report.history.completed",
+                        commit_count=len(commits),
+                        file_count=sum(len(commit["files"]) for commit in commits),
+                        elapsed_ms=elapsed_ms(started),
+                    )
+                    phase = "model"
                     summary = await summarize(commits, self.complete)
                 if request.rollback:
                     summary = "本次回滚撤销了以下提交带来的变更：\n" + summary
@@ -179,6 +209,8 @@ class DeploymentSummary:
                     "deployment.report.summary_failed",
                     level="WARNING",
                     error_type=type(error).__name__,
+                    phase=phase,
+                    elapsed_ms=elapsed_ms(started),
                 )
                 summary = "更新摘要暂时生成失败，请查看仓库提交记录；部署已成功。"
         text = title + "\n\n" + summary

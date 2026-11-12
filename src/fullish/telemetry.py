@@ -1,6 +1,7 @@
 """Correlated message-flow metadata; never include message bodies or credentials."""
 
 import json
+import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -60,3 +61,7 @@ def emit(stage: str, *, level: str = "INFO", **fields: object) -> None:
         **fields,
     }
     logger.bind(flow=record).log(level, "flow {}", json.dumps(record, ensure_ascii=False))
+    if "FULLISH_DIAGNOSTICS_DIR" in os.environ:
+        from fullish.agents.diagnostics import record as save_diagnostic
+
+        save_diagnostic(record)

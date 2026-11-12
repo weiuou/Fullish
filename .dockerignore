@@ -30,3 +30,10 @@ src/**/*.pyc
 !deploy/agent/package-lock.json
 !deploy/agent/launch.mjs
 !deploy/agent/control.mjs
+!deploy/unified/
+!deploy/unified/**
+!plugins/visualize/inspect.mjs
+!README.md
+!docs/
+!docs/**
+docs/archive/**

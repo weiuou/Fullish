@@ -85,6 +85,7 @@ jobs:
         with:
           context: .
           load: true
+          target: unified
           push: false
           platforms: ${{ vars.DEPLOY_PLATFORM || 'linux/amd64' }}
           tags: fullish:ci

@@ -166,9 +166,11 @@ def create_app() -> FastAPI:
         agent_runs.recover()
         agent_runs.prune()
         bridge = None
-        if agent_settings.visualization:
+        if agent_settings.visualization or agent_settings.inspection:
             assert agent_settings.bridge_socket and agent_settings.bridge_token_file
-            bridge = AgentBridge(access, enabled=True)
+            bridge = AgentBridge(
+                access, enabled=agent_settings.visualization, inspection=agent_settings.inspection
+            )
             agent_bridge_server = BridgeServer(
                 bridge,
                 agent_settings.bridge_socket,
