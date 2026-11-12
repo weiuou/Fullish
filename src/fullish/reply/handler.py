@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from typing import TYPE_CHECKING
 
 from fullish.collection import CollectedMessage
 from fullish.errors import ModelError
@@ -13,6 +14,10 @@ from fullish.sending.service import (
     SendingService,
 )
 from fullish.telemetry import elapsed_ms, emit, message_trace
+from fullish.tools.runtime import ToolContext
+
+if TYPE_CHECKING:
+    from fullish.agents.store import RunStore
 
 GENERATION_FAILURE_REPLY = "这次没能生成回复，暂时没处理好，请稍后再试。"
 IMAGE_FAILURE_REPLY = "这张图没能生成出来，这次没完成。"
@@ -26,9 +31,16 @@ def failure_reply(error: Exception) -> str:
 
 
 class ChatHandler:
-    def __init__(self, conversations: ConversationService, sending: SendingService):
+    def __init__(
+        self,
+        conversations: ConversationService,
+        sending: SendingService,
+        *,
+        runs: "RunStore | None" = None,
+    ):
         self.conversations = conversations
         self.sending = sending
+        self.runs = runs
 
     async def handle(
         self, message: CollectedMessage, transport: DeliveryTransport, *, segment_types: list[str]
@@ -39,6 +51,8 @@ class ChatHandler:
             outcome = "failed"
             fallback = False
             delivery = DeliveryResult()
+            agent_run = None
+            delivery_started = False
             try:
                 emit(
                     "qq.message.parsed",
@@ -67,6 +81,18 @@ class ChatHandler:
                     fallback = True
                 if reply:
                     phase = "send"
+                    if self.runs:
+                        agent_run = self.runs.get(
+                            ToolContext(
+                                message.group_id,
+                                message.sender.id,
+                                message.message_id,
+                            )
+                        )
+                        if agent_run:
+                            # Commit intent before the platform can accept the send.
+                            self.runs.delivery(agent_run.run_id, "sending")
+                            delivery_started = True
                     await self.sending.deliver(
                         DeliveryRequest(message.group_id, reply, fallback=fallback),
                         transport,
@@ -102,6 +128,18 @@ class ChatHandler:
                 )
                 emit("qq.message.failed", level="WARNING", phase=phase, **fields)
             finally:
+                if delivery_started and agent_run and self.runs:
+                    state = (
+                        "confirmed"
+                        if delivery.confirmed
+                        else "unknown"
+                        if any(item.state == "unknown" for item in delivery.items)
+                        else "blocked"
+                        if delivery.items
+                        and all(item.state == "blocked" for item in delivery.items)
+                        else "failed"
+                    )
+                    self.runs.delivery(agent_run.run_id, state)
                 if delivery.items:
                     phase = delivery.phase
                 emit(

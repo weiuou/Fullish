@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS base
 # Independent, credential-free image. Dependencies are installed here by maintainers.
 RUN mkdir -p /workspace /opt/fullish && chown 10001:10001 /workspace
 COPY src/fullish/sandbox/worker.py /opt/fullish/worker.py
@@ -8,3 +8,27 @@ USER 10001:10001
 WORKDIR /workspace
 ENTRYPOINT ["python3", "-I", "/opt/fullish/worker.py"]
 CMD ["--idle"]
+
+FROM node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f AS renderer-deps
+WORKDIR /opt/fullish-render
+COPY plugins/visualize/renderer/package.json plugins/visualize/renderer/package-lock.json ./
+RUN npm ci --ignore-scripts --omit=dev
+
+FROM base AS visualization
+USER root
+ARG CHROMIUM_VERSION=156.0.8078.79-1~deb12u1
+ARG NOTO_CJK_VERSION=1:20220127+repack1-1
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install --no-install-recommends -y \
+        "chromium=$CHROMIUM_VERSION" "fonts-noto-cjk=$NOTO_CJK_VERSION" \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=renderer-deps /usr/local/bin/node /usr/local/bin/node
+COPY --from=renderer-deps /opt/fullish-render/node_modules /opt/fullish-render/node_modules
+COPY plugins/visualize/renderer/render.mjs plugins/visualize/renderer/render.test.mjs /opt/fullish-render/
+RUN printf '#!/bin/sh\nexec /usr/local/bin/node /opt/fullish-render/render.mjs "$@"\n' \
+    > /usr/local/bin/fullish-render && chmod 0755 /usr/local/bin/fullish-render
+USER 10001:10001
+
+# Keep the ordinary worker as the default build; visualization is explicitly selected.
+FROM base AS sandbox

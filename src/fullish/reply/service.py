@@ -28,6 +28,7 @@ class ConversationService:
         generation: GenerationCoordinator,
         observe: Callable[[str], None] | None = None,
         postprocessor: ReplyPostprocessor | None = None,
+        postprocess_when: Callable[[ToolContext], bool] | None = None,
     ):
         self.model = model
         self.store = store
@@ -35,6 +36,7 @@ class ConversationService:
         self.generation = generation
         self.observe = observe
         self.postprocessor = postprocessor
+        self.postprocess_when = postprocess_when
 
     async def receive(
         self,
@@ -88,12 +90,18 @@ class ConversationService:
                 emit("conversation.skipped", reason="group_policy_changed")
                 return None
             history = self.store.snapshot(group, current_turn, addressed=message.addressed)
+            context = ToolContext(message.group_id, message.sender.id, message.message_id)
             draft = await self.model.reply(
                 history,
                 addressed=called,
-                context=ToolContext(message.group_id, message.sender.id, message.message_id),
+                context=context,
             )
-            if draft and self.postprocessor and self.access.reply_allowed(message.group_id, draft):
+            if (
+                draft
+                and self.postprocessor
+                and (self.postprocess_when is None or self.postprocess_when(context))
+                and self.access.reply_allowed(message.group_id, draft)
+            ):
                 return await self.postprocessor.process(
                     draft,
                     context=history,

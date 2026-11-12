@@ -73,7 +73,7 @@ jobs:
     needs: [changes, checks]
     if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,6 +106,8 @@ jobs:
         run: |
           docker build -f deploy/Dockerfile.sandbox -t fullish-sandbox:ci .
           python3 scripts/sandbox-smoke.py --worker-image fullish-sandbox:ci
+      - name: Build the optional visualization worker
+        run: docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sandbox:visualization-ci .
       - name: Install rootless sandbox test prerequisites
         run: |
           sudo apt-get update
@@ -137,7 +139,7 @@ jobs:
           command -v dockerd-rootless-setuptool.sh
           command -v rootlesskit
       - name: Verify real rootless gVisor, host limits and deployment socket
-        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci
+        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci fullish-sandbox:visualization-ci
       - name: Export the verified image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker save --output fullish-image.tar fullish:ci
@@ -149,10 +151,30 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  agent:
+    name: Verify the pinned agent and plugin
+    needs: [changes, checks]
+    if: needs.changes.outputs.runtime == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the dedicated runtime
+        run: docker build -f deploy/Dockerfile.agent -t fullish-agent:ci .
+      - name: Exercise native sessions and the plugin with local fixtures
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=128m --cap-drop ALL \
+            --security-opt no-new-privileges:true --pids-limit 128 --memory 512m \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --entrypoint node fullish-agent:ci /workspace/tests/agent_container_smoke.mjs
+
   publish:
     name: Publish verified image
     if: needs.changes.outputs.runtime == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: [changes, container]
+    needs: [changes, container, agent]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

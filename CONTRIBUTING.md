@@ -1,6 +1,6 @@
 # 参与 Fullish
 
-Fullish 已具备 QQ 群聊、CPA 模型与工具接入、可重复部署和回滚能力。下一步聚焦统一发送与可恢复的一次性提醒，范围见 [路线图](docs/roadmap.md)。贡献者不需要获得生产服务器权限或任何生产密钥。
+Fullish 已具备 QQ 群聊、CPA 模型与工具接入、可重复部署和回滚能力。当前开发可选 Dim agent 后端与 visualize 插件，尚未上线；一次性提醒保留为独立的未实现工作流，范围见 [路线图](docs/roadmap.md) 和 [agent 开发路径](docs/agent-runtime-plan.md)。贡献者不需要获得生产服务器权限或任何生产密钥。
 
 ## 开始开发
 

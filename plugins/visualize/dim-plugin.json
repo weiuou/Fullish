@@ -1,0 +1,6 @@
+{
+  "name": "fullish-visualize",
+  "description": "Draw, inspect and revise offline diagrams through Fullish's authorized group sandbox",
+  "code": { "entry": "index.ts", "inject": ["partRegistry"] },
+  "skills": "skills"
+}
