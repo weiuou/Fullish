@@ -107,11 +107,13 @@ try {
     '--env', 'DIM_ALLOWED_GROUPS=gggggggggggggggg', '--env', 'GROUP_CONTROL_DIR=/var/lib/fullish/control',
     '--env', 'FULLISH_DIAGNOSTICS_DIR=/var/lib/fullish-diagnostics', '--env', 'QQ_APP_SECRET=synthetic-fullish-secret',
     '--entrypoint', 'python'];
-  const running = docker('run', '--rm', '--name', prefix, ...common, image,
+  let completed;
+  const running = docker('run', '--name', prefix, ...common, image,
     '/opt/fullish-integrated/launch.py', '--with-agent', 'python', '/workspace/tests/unified_fixture.py')
-    .then(output => ({ output }), error => ({ error }));
+    .then(output => ({ output }), error => ({ error })).then(result => { completed = result; return result; });
   let ready = false;
   for (let attempt = 0; attempt < 100; attempt++) {
+    if (completed?.error) throw completed.error;
     const result = await docker('exec', '--user', '10001:10003', prefix, 'python', '-c',
       "from pathlib import Path; assert Path('/var/lib/fullish/control/boundary-sentinel').exists()")
       .then(() => true, () => false);

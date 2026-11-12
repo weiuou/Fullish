@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 assert os.geteuid() == 0, "Unified bootstrap requires the explicit root startup profile"
+os.setgroups([10003])  # Bootstrap may traverse the private IPC directories, then drops this group.
 command = sys.argv[1:] or ["python", "-m", "fullish"]
 with_agent = command[:1] == ["--with-agent"]
 if with_agent:

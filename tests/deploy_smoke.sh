@@ -54,6 +54,9 @@ case "${1:-}" in
                     revision_file="$state/revision-${3##*@sha256:}"
                     if [[ -f $revision_file ]]; then cat "$revision_file"; else echo dev; fi
                     ;;
+                '{{index .Config.Labels "org.fullish.unified-runtime"}}')
+                    if [[ -f $state/unified-capable ]] && ! matches legacy-only "$3"; then echo true; else echo false; fi
+                    ;;
                 *) exit 2 ;;
             esac
         else
@@ -65,6 +68,7 @@ case "${1:-}" in
         inspect_container "$3"
         ;;
     exec)
+        if [[ ${2:-} == --user ]]; then set -- "$1" "${@:4}"; fi
         if [[ ${4:-} == -m && ${5:-} == fullish.agents.check ]]; then
             [[ ! -f $state/agent-postflight-fails ]] || exit 1
             exit 0
@@ -491,6 +495,41 @@ assert_running "$image_b"
 grep -q -- "--file $FULLISH_ROOT/compose.agent.yaml" "$FAKE_DOCKER_STATE/calls.log" || fail 'agent override omitted'
 grep -q -- 'fullish.agents.check --preflight' "$FAKE_DOCKER_STATE/calls.log" || fail 'agent preflight omitted'
 grep -q -- 'exec fake-fullish-bot python -m fullish.agents.check' "$FAKE_DOCKER_STATE/calls.log" || fail 'agent postflight omitted'
+pass
+
+new_case unified_uses_one_service_and_unprivileged_postflight
+seed_release "$image_a"
+printf 'AGENT_BACKEND=dim\n' > "$FULLISH_ROOT/runtime.env"
+printf 'services: {}\n' > "$FULLISH_ROOT/compose.unified.yaml"
+touch "$FAKE_DOCKER_STATE/unified-capable"
+run_deploy "$image_b"
+assert_success
+assert_state "$image_b" "$image_a"
+assert_running "$image_b"
+grep -q -- "--file $FULLISH_ROOT/compose.unified.yaml" "$FAKE_DOCKER_STATE/calls.log" || fail 'unified profile omitted'
+grep -q -- 'exec --user 10001:10003 fake-fullish-bot python -m fullish.agents.check' "$FAKE_DOCKER_STATE/calls.log" || fail 'postflight did not drop identity'
+pass
+
+new_case unified_rejects_incompatible_image_before_stopping_sender
+seed_release "$image_a"
+printf 'AGENT_BACKEND=dim\n' > "$FULLISH_ROOT/runtime.env"
+printf 'services: {}\n' > "$FULLISH_ROOT/compose.unified.yaml"
+run_deploy "$image_b"
+assert_failure
+assert_state "$image_a" ''
+assert_running "$image_a"
+[[ ! -f $FAKE_DOCKER_STATE/report-calls.log ]] || fail 'incompatible image reported success'
+pass
+
+new_case unified_postflight_failure_restores_compatible_sender
+seed_release "$image_a"
+printf 'AGENT_BACKEND=dim\n' > "$FULLISH_ROOT/runtime.env"
+printf 'services: {}\n' > "$FULLISH_ROOT/compose.unified.yaml"
+touch "$FAKE_DOCKER_STATE/unified-capable" "$FAKE_DOCKER_STATE/agent-postflight-fails"
+run_deploy "$image_b"
+assert_failure
+assert_state "$image_a" ''
+assert_running "$image_a"
 pass
 
 printf 'All %s deployment transaction scenarios passed.\n' "$case_count"

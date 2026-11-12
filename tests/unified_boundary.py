@@ -32,7 +32,8 @@ for directory in Path("/proc").iterdir():
     if not directory.name.isdigit():
         continue
     try:
-        if b"/workspace/tests/unified_fixture.py" in (directory / "cmdline").read_bytes():
+        arguments = (directory / "cmdline").read_bytes().split(b"\0")
+        if len(arguments) > 1 and arguments[1] == b"/workspace/tests/unified_fixture.py":
             fullish.append(directory)
     except (FileNotFoundError, PermissionError):
         pass
