@@ -1,14 +1,14 @@
 # Dim 与 visualize 接入及验证
 
-状态：直接渲染已合并部署，继续显式单群试运行。日期：2026-11-12。接口与迁移设计见 [Issue #48](https://github.com/weiuou/Fullish/issues/48)，排版回归见 [Issue #46](https://github.com/weiuou/Fullish/issues/46)，后续范围见 [开发路径](agent-runtime-plan.md)。旧版沙箱渲染曾完成单群试运行，其结果仅作为[历史证据](archive/2026-11-12-agent-sandbox-runtime.md)。
+状态：当前试运行已切换为 [Fullish/Dim 同容器与只读自检](unified-runtime.md)。日期：2026-11-13。本文保留独立 companion 的兼容部署说明及先前绘图验收；旧沙箱记录仍是[历史证据](archive/2026-11-12-agent-sandbox-runtime.md)。
 
 ## 已实现的接入结构
 
-同容器与只读自检的候选变更正在验证，见[同容器指南](unified-runtime.md)。下述部署记录仍对应已上线的独立 companion，不代表候选已切换。
+现行部署和权限边界见[同容器指南](unified-runtime.md)。下述 companion 配置是保留的兼容模式，不是当前生产配置。
 
-Fullish 为 `DIM_ALLOWED_GROUPS` 中的具体群选择 Dim 回复后端，每条被叫到的消息建立独立任务会话。Dim 使用固定 `dimcode-alpha@0.1.0-alpha.20` 原生 App Server v3，rutis 插件 SDK/runtime 固定 `0.19.3`，visualize 插件版本为 `0.2.0`。Fullish 保留群上下文、身份、权限、队列和最终投递确认；Dim 群关闭额外的表达后处理。
+Fullish 为 `DIM_ALLOWED_GROUPS` 中的具体群选择 Dim 回复后端，每条被叫到的消息建立独立任务会话。Dim 使用固定 `dimcode-alpha@0.1.0-alpha.20` 原生 App Server v3，rutis 插件 SDK/runtime 固定 `0.19.3`，visualize 插件当前为 `0.3.0`；原独立 companion 的 2026-11-12 验收使用 `0.2.0`。Fullish 保留群上下文、身份、权限、队列和最终投递确认；Dim 群关闭额外的表达后处理。
 
-`visualize_render` 是实际执行绘图的 rutis 工具：插件在专用 Dim companion 内创建私有临时目录，直接调用 Chromium 渲染 SVG、Mermaid 或 HTML，返回真实 PNG 给模型检查，结束时删除临时文件。Fullish 不执行绘图源码，也不为该工具调用 `ToolRuntime`、群沙箱或 broker。通用沙箱仍按原配置独立运行。
+`visualize_render` 是实际执行绘图的 rutis 工具：插件在 Dim 进程的私有临时目录内，直接调用 Chromium 渲染 SVG、Mermaid 或 HTML，返回真实 PNG 给模型检查，结束时删除临时文件。Fullish 不执行绘图源码，也不为该工具调用 `ToolRuntime`、群沙箱或 broker。通用沙箱仍按原配置独立运行。
 
 插件先通过私有桥接请求一次绘图票据，Fullish 绑定 run/session、真实群和事件，并检查聊天与图片权限；随后只接收该票据对应的一次有界 PNG。接受图片、选择最终候选和实际投递前均重新核对权限。模型不能传群身份、宿主机路径、浏览器启动选项或任意命令。图片产物只属于本轮；`fullish_reply` 登记候选，由公共发送服务获得 QQ 确认后才写历史。
 
@@ -18,7 +18,7 @@ Fullish 为 `DIM_ALLOWED_GROUPS` 中的具体群选择 Dim 回复后端，每条
 
 最小运行登记位于 `GROUP_CONTROL_DIR/agent-runs.sqlite3`，只保存事件摘要、run/session 与执行/投递状态；不保存可重放内容。相同事件不再次执行，重启后的未决运行标为不明。已知终态保留七天，未决记录不自动过期，不提供自动补发。
 
-## 当前验证证据
+## 独立 companion 的验证证据
 
 | 层次 | 结果与边界 |
 | --- | --- |

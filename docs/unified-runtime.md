@@ -1,6 +1,6 @@
 # Fullish 与 Dim 同容器及只读自检
 
-状态：候选实现正在验证，尚未切换生产。2026-11-13。用户要求及接口、权限、迁移合同见 [Issue #50](https://github.com/weiuou/Fullish/issues/50)，当前已上线的 companion 版本见 [接入记录](agent-runtime.md)。
+状态：已上线，显式单群试运行。2026-11-13。用户要求及接口、权限、迁移合同见 [Issue #50](https://github.com/weiuou/Fullish/issues/50)，原独立 companion 的兼容部署与历史验收见 [接入记录](agent-runtime.md)。
 
 ## 权限边界
 
@@ -10,7 +10,8 @@
 | --- | --- | --- |
 | `/opt/fullish-readonly`：同版本源码及现行文档 | 只读 | 只读 |
 | `/app/.venv`：实际运行代码 | 只读 | 只读 |
-| `/var/lib/fullish/control`、钱包、审计与 bot 凭证 | 所属 UID 读写 | 无私有数据访问 |
+| `/var/lib/fullish/control`、钱包与审计 | 所属 UID 读写 | 无私有数据访问 |
+| Fullish 私有凭证与进程环境 | 所属 UID 可读 | 不可读 |
 | `/var/lib/fullish-diagnostics`：脱敏部署元数据 | 写入，文件 0640 | 组只读，目录不可写 |
 | Dim home、任务及临时目录 | 仅共享任务目录 | 自有目录可写 |
 | RPC 与候选桥接 | 指定 UID/GID 的 0660 socket | 指定 UID/GID 的 0660 socket |
@@ -60,4 +61,16 @@ docker build --target unified --build-arg APP_REVISION=<源码提交> -t fullish
 
 [单容器场景](../tests/unified_agent_integration.mjs) 使用实际 Linux、双 UID、固定 Dim/rutis 与 Chromium；仅模型和 QQ 为模拟边界。它检查源码/状态/诊断/凭证和 `/proc`、进程信号、root 恢复的实际权限，以及自检、源码阅读、两次 PNG 到模型、最终字节与确认后历史；另核对独立 preflight 不改变活跃 RPC 且零模型调用。
 
-实际检查结果以对应候选 CI 为准。生产切换、真实模型与 QQ 的证据需另外记录，不把模拟通过视为已经上线。
+镜像中的源码及文档视图是对应构建版本的快照，当前运行方式应以 `fullish_self_check` 为准。命令执行与任意文件写工具尚未开放。
+
+## 2026-11-13 上线及验收记录
+
+[PR #51](https://github.com/weiuou/Fullish/pull/51) 合并为 `e78a45356cd84b97f54c410d683e1180fae0d89b`，经[主分支流程](https://github.com/weiuou/Fullish/actions/runs/43260697528)先发布兼容镜像，再协调切换为单容器。运行镜像为 `ghcr.io/weiuou/fullish@sha256:cc243b36f40454bce09df6108f5470cc68318e42a19efbd111554bf5b37a462f`；旧 companion 已停止，配置、密钥与旧卷保留用于回退。仍只开放原试运行群，没有扩大群授权。
+
+[候选 CI](https://github.com/weiuou/Fullish/actions/runs/43258208997) 通过 638 项测试、28 个部署事务场景、旧 companion 兼容及真实单容器完整回放。服务器候选也通过真实内核检查：Dim 可读源码、写自己的目录，但不能写 Fullish 源码、状态或诊断，不能读 Fullish 私有凭证及进程环境、不能向其发信号或恢复 root。迁移后重新核对了实际进程 UID、文件边界、QQ ready、沙箱/钱包/Dim 发布后探针及 1 GiB/256 PIDs 限额。
+
+受控真实 `gpt-6-luna` 在同容器内调用了 `fullish_self_check` 和 `fullish_inspect`，读取摘要源码后进行两次绘图。共 7 次模型请求，约 65.9 秒至真实 QQ 图文确认，确认后只记录一条回复。PNG 为 1000 × 500、51150 字节，SHA-256 为 `b6b37e85fe98bad680c295df3a90678ce415c8f51fb512cf25e50cc934ad9c12`。验收使用明确标记的部署输入，未伪造 QQ 入站事件；长期质量、费用和正常群聊仍需观察。
+
+![同容器只读自检的受控验收图片](assets/visualize-unified-live.png)
+
+现有部署摘要仍使用独立的 Fullish 模型链路；本次增加诊断可见性，没有修改其模型选择或 180 秒预算。旧失败元数据已脱敏保留，后续新记录可以区分历史读取与模型阶段。自检能提供证据，不会自行修改配置或重启 Fullish。
