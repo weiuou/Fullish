@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { readFile, writeFile, mkdir, lstat, chmod } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
-import { createConnection } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { connectControl, stopExpiredSessions } from './control.mjs';
 
 const require = createRequire(import.meta.url);
@@ -63,6 +63,8 @@ if (process.argv[2] === '--check') {
   await check();
 } else {
   const home = process.env.DIM_HOME || '/var/lib/fullish-agent';
+  const nativeEndpoint = integrated ? resolve(home, 'native/rpc.sock') : endpoint;
+  if (integrated) await mkdir(dirname(nativeEndpoint), { recursive: true, mode: 0o700 });
   const modelKey = (await readFile('/run/secrets/dim-model-key', 'utf8')).trim();
   const bridgeToken = (await readFile(process.env.DIM_BRIDGE_TOKEN_FILE || '/run/secrets/dim-bridge-token', 'utf8')).trim();
   if (!modelKey || bridgeToken.length < 32) throw Error('agent_credentials_missing');
@@ -80,7 +82,7 @@ if (process.argv[2] === '--check') {
   }] };
   await writeFile(resolve(home, 'model.json'), JSON.stringify(config), { mode: 0o600 });
   const child = spawn(binary, ['app-server', '--home', home, '--model-config', resolve(home, 'model.json'),
-    '--unix', endpoint, '--no-ws', '--threads', '2', '--defaults', '/opt/fullish-plugin/defaults.json',
+    '--unix', nativeEndpoint, '--no-ws', '--threads', '2', '--defaults', '/opt/fullish-plugin/defaults.json',
     '--node', '/usr/local/bin/node', '--js-runtime', '/opt/fullish-plugin/node_modules/@arcships/rutis-runtime'],
   { stdio: 'inherit', env: {
     PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home, LANG: 'C.UTF-8', RUST_LOG: 'error',
@@ -89,13 +91,21 @@ if (process.argv[2] === '--check') {
     FULLISH_AGENT_BRIDGE_SOCKET: process.env.DIM_BRIDGE_SOCKET || '/run/fullish-agent/bridge.sock',
   } });
   let stopping = false;
+  let proxy;
+  const connections = new Set();
+  const closeProxy = () => {
+    proxy?.close();
+    for (const connection of connections) connection.destroy();
+    connections.clear();
+  };
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
     stopping = true;
+    closeProxy();
     child.kill(signal);
   });
   child.on('error', () => { process.exitCode = 1; });
   child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
-  child.once('exit', () => { stopping = true; });
+  child.once('exit', () => { stopping = true; closeProxy(); });
   const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   // The controller can disappear while the daemon remains healthy. Independently stop
   // orphan/expired sessions; an unresponsive control plane terminates this dedicated daemon.
@@ -105,23 +115,36 @@ if (process.argv[2] === '--check') {
     try {
       while (!stopping && !control) {
         try {
-          if (integrated) {
-            const info = await lstat(endpoint);
-            if (!info.isSocket() || info.uid !== process.getuid()) throw Error('agent_socket_owner');
-            await chmod(endpoint, 0o660);
-          }
-          control = await connectControl(endpoint);
+          control = await connectControl(nativeEndpoint, { privateSocket: integrated });
         }
         catch {
           if (Date.now() >= readyBy) throw Error('agent_watchdog_start_timeout');
           await pause(200);
         }
       }
+      if (integrated && !stopping) {
+        proxy = createServer(client => {
+          const upstream = createConnection(nativeEndpoint);
+          connections.add(client); connections.add(upstream);
+          const close = () => {
+            client.destroy(); upstream.destroy();
+            connections.delete(client); connections.delete(upstream);
+          };
+          client.on('error', close); upstream.on('error', close);
+          client.on('close', close); upstream.on('close', close);
+          client.pipe(upstream).pipe(client);
+        });
+        await new Promise((resolve, reject) => {
+          proxy.once('error', reject); proxy.listen(endpoint, resolve);
+        });
+        await chmod(endpoint, 0o660);
+      }
       while (!stopping) {
         await stopExpiredSessions(control.call);
         await pause(500);
       }
     } catch {
+      closeProxy();
       if (!stopping) {
         process.stderr.write('agent_watchdog_failed\n');
         child.kill('SIGTERM');
