@@ -15,7 +15,7 @@
 | Dim home、任务及临时目录 | 仅共享任务目录 | 自有目录可写 |
 | RPC 与候选桥接 | 指定 UID/GID 的 0660 socket | 指定 UID/GID 的 0660 socket |
 
-RPC 两端目录各自由所属 UID 管理，另一方只有组遍历/读取权限，不能替换对方 socket。旧 companion 的同 UID/0600 验证仍保留，仅显式 `DIM_DEPLOYMENT=unified` 使用固定双 UID 合同。没有 Docker socket、重启或任意宿主机命令工具。Dim 对 Fullish 的只读限制由文件系统与 Linux 身份执行，不能被群聊提示词解除。
+RPC 两端目录各自由所属 UID 管理，另一方只有组遍历/读取权限，不能替换对方 socket。Dim 原生 endpoint 仍位于其 0700 私有目录并保持 0600，由同 UID 的 Unix 字节代理提供 0660 共享端点；客户端同时核对文件身份和内核 peer UID/GID。旧 companion 的同 UID/0600 验证仍保留，仅显式 `DIM_DEPLOYMENT=unified` 使用固定双 UID 合同。没有 Docker socket、重启或任意宿主机命令工具。Dim 对 Fullish 的只读限制由文件系统与 Linux 身份执行，不能被群聊提示词解除。
 
 ## 群聊自检
 

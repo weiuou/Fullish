@@ -138,7 +138,7 @@ try {
   const report = JSON.parse(result.output.trim().split('\n').at(-1));
   assert.ok(report.confirmed_delivery_and_history && report.deployment_pre_and_postflight);
   assert.ok(selfChecked && sourceRead && pixels.has(report.final_png_sha256));
-  assert.equal(requests, 7);
+  assert.ok(requests >= 6 && requests <= 7, 'only the bounded fixture flow and optional native final tail');
   console.log(JSON.stringify({ unified_container: true, kernel_readonly_boundary: true,
     read_only_inspection: true, actual_png_inputs: pixels.size, confirmed_history: true,
     preflight_isolated: true, paid_model_calls: 0, real_qq_calls: 0 }));

@@ -1,7 +1,7 @@
 /** Dedicated runtime entrypoint: no bot, wallet, personal-home or arbitrary workspace mounts. */
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { readFile, writeFile, mkdir, lstat, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, lstat, chmod, unlink } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection, createServer } from 'node:net';
 import { connectControl, stopExpiredSessions } from './control.mjs';
@@ -123,6 +123,21 @@ if (process.argv[2] === '--check') {
         }
       }
       if (integrated && !stopping) {
+        try {
+          const previous = await lstat(endpoint);
+          if (!previous.isSocket() || previous.uid !== process.getuid() || previous.gid !== 10003) {
+            throw Error('proxy_path_not_owned');
+          }
+          await new Promise((resolve, reject) => {
+            const probe = createConnection(endpoint);
+            probe.setTimeout(1000, () => probe.destroy(Error('proxy_probe_timeout')));
+            probe.once('connect', () => { probe.destroy(); reject(Error('proxy_in_use')); });
+            probe.once('error', error => error.code === 'ECONNREFUSED' ? resolve() : reject(error));
+          });
+          const current = await lstat(endpoint);
+          if (current.ino !== previous.ino || current.dev !== previous.dev) throw Error('proxy_path_changed');
+          await unlink(endpoint);
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
         proxy = createServer(client => {
           const upstream = createConnection(nativeEndpoint);
           connections.add(client); connections.add(upstream);
@@ -134,9 +149,11 @@ if (process.argv[2] === '--check') {
           client.on('close', close); upstream.on('close', close);
           client.pipe(upstream).pipe(client);
         });
+        proxy.maxConnections = 32;
         await new Promise((resolve, reject) => {
           proxy.once('error', reject); proxy.listen(endpoint, resolve);
         });
+        proxy.on('error', () => { child.kill('SIGTERM'); });
         await chmod(endpoint, 0o660);
       }
       while (!stopping) {

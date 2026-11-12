@@ -5,10 +5,12 @@ import contextlib
 import json
 import os
 import re
+import socket
+import struct
 from pathlib import Path
 from typing import Any
 
-from fullish.agents.local import private_rpc
+from fullish.agents.local import private_rpc, unified
 
 DIM_VERSION = "0.1.0-alpha.20"
 DIM_REVISION = "d3910d14999119c37d61d5d52139dfa29b81eab3"
@@ -74,6 +76,15 @@ class DimRPC:
             if not private_rpc(info):
                 raise DimError("dim_private_socket_required")
             reader, writer = await asyncio.open_unix_connection(endpoint, limit=MAX_FRAME + 1)
+            if unified():
+                peer = writer.get_extra_info("socket")
+                _pid, uid, gid = struct.unpack(
+                    "3i", peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+                )
+                if (uid, gid) != (10002, 10003):
+                    writer.close()
+                    await writer.wait_closed()
+                    raise DimError("dim_socket_peer_mismatch")
         rpc = cls(reader, writer, process=process)
         try:
             hello = await rpc.call(
