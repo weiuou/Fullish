@@ -22,9 +22,9 @@
 
 自动更新流程图由内置 ImageGen 生成，原始提示词保存在 [图片说明](assets/deployment-flow.prompt.md)。部署细节见 [SSH 部署](deployment-ssh.md) 或 [TAT 部署](deployment.md)。
 
-## 依赖自动更新
+完整容器检查还覆盖 [Fullish/Dim 同容器只读边界](unified-runtime.md)：两个真实 Linux UID、不可写源码/私有状态、脱敏诊断、独立预发布 RPC，以及真实 Dim 插件的自检、读源码、看图修正和模拟 QQ 确认。主镜像采用 `unified` target，默认非 root Python 入口仍运行 foundation smoke；专用 companion 继续作兼容检查。
 
-完整容器检查还覆盖 [Fullish/Dim 同容器只读边界](unified-runtime.md)：两个真实 Linux UID、不可写源码/私有状态、脱敏诊断、独立预发布 RPC，以及真实 Dim 插件的自检、读源码、看图修正和模拟 QQ 确认。候选主镜像采用 `unified` target，默认非 root Python 入口仍运行 foundation smoke；专用 companion 继续作兼容检查。
+## 依赖自动更新
 
 Dependabot 自动版本更新 PR 已关闭，仓库不再保留其自动更新配置。GitHub Actions、Python 依赖和 Docker 基础镜像由维护者按需升级，手动提交 PR，经审查和 CI 验证后合并。正常的 CI、镜像发布与部署流程继续运行。
 
