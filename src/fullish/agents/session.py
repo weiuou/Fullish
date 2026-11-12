@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 
 from fullish.agents.rpc import DimError, DimRPC
@@ -67,9 +68,17 @@ async def history(rpc: DimRPC, session_id: str) -> list[dict[str, Any]]:
     raise DimError("dim_history_limit")
 
 
-async def wait_turn(rpc: DimRPC, session_id: str, *, deadline: float) -> list[dict]:
+async def wait_turn(
+    rpc: DimRPC,
+    session_id: str,
+    *,
+    deadline: float,
+    allowed: Callable[[], bool] | None = None,
+) -> list[dict]:
     """Poll durable terminal facts; an idle RPC or dropped connection alone is insufficient."""
     while time.monotonic() < deadline:
+        if allowed and not allowed():
+            raise DimError("dim_group_revoked")
         events = await history(rpc, session_id)
         if any((event.get("type"), event.get("name")) == ("turn", "end") for event in events):
             return events

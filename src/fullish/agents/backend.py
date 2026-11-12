@@ -4,11 +4,11 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
 import time
-from pathlib import Path
 
 from fullish.agents.bridge import AgentBridge
-from fullish.agents.rpc import DimError, DimRPC
+from fullish.agents.rpc import DIM_VERSION, DimError, DimRPC
 from fullish.agents.session import completed_turn, final_text, wait_turn
 from fullish.agents.settings import AgentSettings
 from fullish.agents.store import RunStore
@@ -19,7 +19,7 @@ from fullish.reply.media import ImageReader
 from fullish.reply.prompts import PERSONA
 from fullish.reply.schema import ReplyModel, Turn
 from fullish.sending import Reply
-from fullish.telemetry import emit
+from fullish.telemetry import elapsed_ms, emit, reference
 from fullish.tools.runtime import ToolContext
 
 
@@ -84,6 +84,8 @@ class DimReplyModel:
         if context is None or not self.access.group_allowed(context.group_id):
             return None
         async with self.capacity:
+            if not self.access.group_allowed(context.group_id):
+                return None
             run = self.store.claim(context)
             if run is None:
                 return None
@@ -91,6 +93,7 @@ class DimReplyModel:
             session_id = ""
             settled = False
             lease = None
+            workspace = None
             start = time.monotonic()
             emit("agent.started", run_id=run.run_id, backend="dim")
             try:
@@ -101,6 +104,8 @@ class DimReplyModel:
                         turns,
                         addressed,
                     )
+                    if not self.access.group_allowed(context.group_id):
+                        raise DimError("dim_group_revoked")
                     rpc = await DimRPC.connect(
                         self.settings.endpoint,
                         executable=self.settings.executable,
@@ -109,7 +114,7 @@ class DimReplyModel:
                     # Group/run roots contain no bot config or credentials, and are shared only
                     # with the dedicated runtime. They never become outgoing attachment paths.
                     group = hashlib.sha256(context.group_id.encode()).hexdigest()[:32]
-                    workspace: Path = self.settings.workspace / group / run.run_id
+                    workspace = self.settings.workspace / group / run.run_id
                     workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
                     tool_names = self.bridge.tool_names(context) if self.bridge else []
                     created = await rpc.call(
@@ -135,6 +140,8 @@ class DimReplyModel:
                             start + self.settings.timeout,
                         )
                     await rpc.call("session.attach", {"sessionId": session_id})
+                    if not self.access.group_allowed(context.group_id):
+                        raise DimError("dim_group_revoked")
                     self.store.update(run.run_id, state="submitting")
                     await rpc.call(
                         "session.submit",
@@ -150,8 +157,33 @@ class DimReplyModel:
                         rpc,
                         session_id,
                         deadline=start + self.settings.timeout,
+                        allowed=lambda: self.access.group_allowed(context.group_id),
                     )
                     settled = True
+                    usage = {
+                        event["data"]["request_id"]: event["data"]["usage"]
+                        for event in events
+                        if (event.get("type"), event.get("name")) == ("model", "usage")
+                    }
+                    totals = {}
+                    for key in ("promptTokens", "completionTokens", "totalTokens"):
+                        values = [item.get(key) for item in usage.values()]
+                        if values and all(
+                            isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
+                            for value in values
+                        ):
+                            totals[key] = sum(values)
+                    emit(
+                        "agent.result",
+                        run_id=run.run_id,
+                        session_ref=reference(session_id),
+                        runtime_version=DIM_VERSION,
+                        model_requests=sum(event.get("name") == "model-start" for event in events),
+                        model_usage=totals,
+                        tool_calls=lease.calls if lease else 0,
+                        renders=lease.renders if lease else 0,
+                        elapsed_ms=elapsed_ms(start),
+                    )
                     completed_turn(events)
                     if lease and lease.selected and self.bridge:
                         self.bridge.check(lease)
@@ -204,6 +236,17 @@ class DimReplyModel:
                             )
                             if not deleted.get("deleted"):
                                 emit("agent.cleanup.failed", level="WARNING", run_id=run.run_id)
+                            elif workspace:
+                                try:
+                                    # Native tools cannot write here; remove only an empty task
+                                    # directory, never recursively delete runtime-created paths.
+                                    workspace.rmdir()
+                                except OSError:
+                                    emit(
+                                        "agent.workspace.cleanup_deferred",
+                                        level="WARNING",
+                                        run_id=run.run_id,
+                                    )
                         except (DimError, OSError):
                             emit("agent.cleanup.failed", level="WARNING", run_id=run.run_id)
                     await rpc.close()

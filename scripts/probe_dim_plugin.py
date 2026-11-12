@@ -23,6 +23,7 @@ from fullish.agents.store import RunStore
 from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
 from fullish.conversation.store import ConversationStore
 from fullish.policies.access import AccessPolicy
+from fullish.policies.groups import GroupPolicies
 from fullish.reply.handler import ChatHandler
 from fullish.reply.media import ImageReader
 from fullish.reply.service import ConversationService
@@ -40,8 +41,11 @@ async def exercise_plugin(
     plugin: Path,
     browser: Path | None = None,
     preview: Path | None = None,
+    sandbox_group: str | None = None,
 ) -> dict:
-    access = AccessPolicy()
+    group = sandbox_group or "fixture-group"
+    rendering = bool(browser or sandbox_group)
+    access = AccessPolicy(policies=GroupPolicies.from_env() if sandbox_group else None)
     bridge = AgentBridge(access, None)
     token = secrets.token_urlsafe(32)
     listener = socket.socket()
@@ -68,7 +72,7 @@ async def exercise_plugin(
 
         async def sandbox(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
-            if payload["group_id"] != "fixture-group":
+            if payload["group_id"] != group:
                 return httpx.Response(403)
             if request.url.path in {"/files/write", "/files/read"}:
                 name = payload["path"]
@@ -135,7 +139,7 @@ async def exercise_plugin(
         if browser:
             tools = ToolRuntime(
                 ToolSettings(
-                    frozenset({"fixture-group"}),
+                    frozenset({group}),
                     sandbox_socket="/fixture.sock",
                     sandbox_token="fixture" * 8,
                 ),
@@ -143,6 +147,15 @@ async def exercise_plugin(
             )
             bridge.tools = tools
             bridge.enabled = True
+        elif sandbox_group:
+            tool_settings = ToolSettings.from_env()
+            if not tool_settings or not tool_settings.sandbox_socket:
+                raise RuntimeError("Real sandbox configuration is required")
+            tools = ToolRuntime(tool_settings, policies=access.policies)
+            bridge.tools = tools
+            bridge.enabled = True
+
+        seen_pixels: list[bytes] = []
 
         def respond(request: dict) -> dict:
             if not request.get("tools"):
@@ -152,13 +165,14 @@ async def exercise_plugin(
                 for message in request["messages"]
                 if message["role"] == "tool"
             ]
+            render_count = sum(call.startswith("fixture-render-") for call in completed_calls)
             if "fixture-final" in completed_calls:
                 return {"role": "assistant", "content": "这个模型尾句不会替换已登记候选。"}
             arguments = {"text": PLUGIN_REPLY}
             name, call_id = "fullish_reply", "fixture-final"
-            if browser and len(rendered) < 2:
-                name, call_id = "visualize_render", f"fixture-render-{len(rendered) + 1}"
-                color = "#e0f2fe" if not rendered else "#ccfbf1"
+            if rendering and render_count < 2:
+                name, call_id = "visualize_render", f"fixture-render-{render_count + 1}"
+                color = "#e0f2fe" if render_count == 0 else "#ccfbf1"
                 arguments = {
                     "format": "svg",
                     "source": (
@@ -168,7 +182,7 @@ async def exercise_plugin(
                         "群聊 → 智能体 → 离线绘图 → QQ 确认</text></svg>"
                     ),
                 }
-            elif browser:
+            elif rendering:
                 dump = json.dumps(request)
                 if "data:image/png;base64," not in dump:
                     raise RuntimeError("The actual model request did not contain rendered pixels")
@@ -176,6 +190,8 @@ async def exercise_plugin(
                 if not artifacts:
                     raise RuntimeError("No rendered artifact was returned to Dim")
                 arguments["artifact_id"] = artifacts[-1]
+                pixels = re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)", dump)
+                seen_pixels[:] = [base64.b64decode(encoded, validate=True) for encoded in pixels]
             return {
                 "role": "assistant",
                 "content": "准备登记回复。",
@@ -196,7 +212,7 @@ async def exercise_plugin(
             endpoint,
             workspace,
             workspace / "runs.sqlite3",
-            frozenset({"fixture-group"}),
+            frozenset({group}),
             enabled=True,
             executable=executable,
         )
@@ -207,7 +223,7 @@ async def exercise_plugin(
 
         class QQFixture:
             mode: Literal["reply", "proactive"] = "reply"
-            group_id = "fixture-group"
+            group_id = group
 
             def __init__(self):
                 self.candidate = None
@@ -241,7 +257,7 @@ async def exercise_plugin(
         try:
             await handler.handle(
                 CollectedMessage(
-                    "fixture-group",
+                    group,
                     "one",
                     Sender("fixture-member"),
                     ParsedContent((MessagePart("text", "请画一张中文流程图，检查后修正配色。"),)),
@@ -251,28 +267,32 @@ async def exercise_plugin(
                 segment_types=["text"],
             )
             result = qq.candidate
-            if browser:
+            if rendering:
                 if not isinstance(result, OutgoingMessage) or result.text != PLUGIN_REPLY:
                     raise RuntimeError("The real plugin did not return an image candidate")
                 last = result.parts[-1]
-                if len(rendered) != 2 or not isinstance(last, Image) or last.source != rendered[-1]:
+                if (
+                    len(seen_pixels) != 2
+                    or not isinstance(last, Image)
+                    or last.source != seen_pixels[-1]
+                ):
                     raise RuntimeError("The final PNG did not reach Fullish intact")
                 if preview:
                     preview.parent.mkdir(parents=True, exist_ok=True)
-                    preview.write_bytes(rendered[-1])
+                    preview.write_bytes(seen_pixels[-1])
             elif result != PLUGIN_REPLY:
                 raise RuntimeError("The real plugin did not register the expected candidate")
-            record = model.store.get(ToolContext("fixture-group", "fixture-member", "one"))
+            record = model.store.get(ToolContext(group, "fixture-member", "one"))
             if not record or record.delivery != "confirmed" or qq.acknowledged != 1:
                 raise RuntimeError("The candidate did not reach confirmed Fullish delivery")
-            if len(conversations.store.groups["fixture-group"].turns) != 2:
+            if len(conversations.store.groups[group].turns) != 2:
                 raise RuntimeError("Confirmed delivery did not update group history exactly once")
             requests = [request for request in ModelFixture.requests if request.get("tools")]
             if not requests or any(
                 {tool["function"]["name"] for tool in request["tools"]}
                 != (
                     {"visualize_render", "visualize_guide", "fullish_reply"}
-                    if browser
+                    if rendering
                     else {"fullish_reply"}
                 )
                 for request in requests
@@ -285,6 +305,8 @@ async def exercise_plugin(
                 "model_requests": len(requests),
                 "active_leases": len(bridge.leases),
                 "local_browser_renders": len(rendered),
+                "model_png_inputs": len(seen_pixels),
+                "sandbox_boundary": "real_broker" if sandbox_group else "simulated",
                 "gvisor_verified": False,
                 "qq_boundary": "simulated",
                 "confirmed_delivery_and_history": True,
@@ -321,12 +343,21 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--browser", type=Path, help="Real local browser behind a simulated broker")
     parser.add_argument(
+        "--sandbox-group", help="Use the configured real broker for this authorized test group"
+    )
+    parser.add_argument(
         "--preview", type=Path, help="Save the final synthetic PNG when using --browser"
     )
     args = parser.parse_args()
+    if args.browser and args.sandbox_group:
+        parser.error("Choose --browser or --sandbox-group")
     result = asyncio.run(
         exercise_plugin(
-            args.executable.resolve(), args.plugin.resolve(), args.browser, args.preview
+            args.executable.resolve(),
+            args.plugin.resolve(),
+            args.browser,
+            args.preview,
+            args.sandbox_group,
         )
     )
     if args.output:

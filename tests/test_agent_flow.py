@@ -1,6 +1,7 @@
 """Replay real agent RPC, event claims and QQ delivery with only external peers simulated."""
 
 import asyncio
+import base64
 import json
 import time
 from collections.abc import Callable
@@ -8,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import Literal
 
+import httpx
 import pytest
 
 from fullish.agents.backend import AgentRouter, DimReplyModel
@@ -15,14 +17,15 @@ from fullish.agents.rpc import DimError, DimRPC
 from fullish.agents.session import final_text
 from fullish.agents.settings import AgentSettings
 from fullish.agents.store import RunStore
-from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
+from fullish.collection import CollectedMessage, MessagePart, ParsedContent, QuotedMessage, Sender
 from fullish.conversation.store import ConversationStore
+from fullish.errors import ModelError
 from fullish.policies.access import AccessPolicy
 from fullish.reply.handler import ChatHandler
 from fullish.reply.media import ImageReader
 from fullish.reply.service import ConversationService
 from fullish.scheduling.generation import GenerationCoordinator
-from fullish.sending.service import SendingService
+from fullish.sending.service import DeliveryError, SendingService
 from fullish.tools.runtime import ToolContext
 
 
@@ -168,6 +171,16 @@ def test_agent_to_confirmed_qq_and_restart_redelivery(tmp_path, monkeypatch):
         )
         access = AccessPolicy(allowed_groups=frozenset({"group-a"}))
         reader = ImageReader()
+        await reader.media.aclose()
+        pictures = {
+            "/quoted.png": b"\x89PNG\r\n\x1a\nsynthetic-quoted-image",
+            "/current.png": b"\x89PNG\r\n\x1a\nsynthetic-current-image",
+        }
+        reader.media = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, content=pictures[request.url.path])
+            )
+        )
         store = RunStore(settings.state_path, bot_id="bot")
         model = DimReplyModel(settings, store, reader, access)
         conversations = ConversationService(
@@ -183,7 +196,26 @@ def test_agent_to_confirmed_qq_and_restart_redelivery(tmp_path, monkeypatch):
         )
         qq = QQPeer()
         try:
-            await handler.handle(incoming(), qq, segment_types=["text"])
+            message = replace(
+                incoming(),
+                content=ParsedContent(
+                    (
+                        MessagePart("text", "本群当前消息"),
+                        MessagePart("image", "", {"url": "https://fixture/current.png"}),
+                    )
+                ),
+                reply=QuotedMessage(
+                    ParsedContent(
+                        (
+                            MessagePart("text", "引用背景不能成为新授权"),
+                            MessagePart("image", "", {"url": "https://fixture/quoted.png"}),
+                        )
+                    ),
+                    reference_id="quoted-event",
+                    sender_id="quoted-member",
+                ),
+            )
+            await handler.handle(message, qq, segment_types=["text", "image"])
             assert qq.messages == ["最终回复"]
             assert peer.created[0]["tools"] == []
             assert peer.created[0]["interactive"] is False
@@ -192,6 +224,15 @@ def test_agent_to_confirmed_qq_and_restart_redelivery(tmp_path, monkeypatch):
                 "allowedTools": [],
             }
             assert len(peer.submitted) == 1 and len(peer.deleted) == 1
+            content = peer.submitted[0]["user"]["content"]
+            assert [
+                base64.b64decode(part["source"]["data"])
+                for part in content
+                if part["type"] == "image"
+            ] == list(pictures.values())
+            assert "quoted-event" in json.dumps(content) and "本群当前消息" in json.dumps(
+                content, ensure_ascii=False
+            )
             snapshot = conversations.store.groups["group-a"].turns
             assert snapshot[-1]["content"] == "最终回复"
             context = ToolContext("group-a", "member", "m1")
@@ -212,6 +253,24 @@ def test_agent_to_confirmed_qq_and_restart_redelivery(tmp_path, monkeypatch):
             blocked = store.get(ToolContext("group-a", "member", "m2"))
             assert blocked and blocked.delivery == "blocked"
             assert len(qq.messages) == 1
+            access.allowed_groups = frozenset({"group-a", "group-b"})
+
+            class AmbiguousQQ(QQPeer):
+                async def send(self, index):
+                    raise DeliveryError("synthetic_lost_ack", ambiguous=True)
+
+            before = len(conversations.store.groups["group-a"].turns)
+            await handler.handle(incoming("m3"), AmbiguousQQ(), segment_types=["text"])
+            uncertain = store.get(ToolContext("group-a", "member", "m3"))
+            assert uncertain and uncertain.delivery == "unknown"
+            assert len(conversations.store.groups["group-a"].turns) == before + 1
+            assert store.claim(ToolContext("group-a", "member", "m3")) is None
+            # Another group's snapshot and workspace contain none of this group's quoted data.
+            other = replace(incoming("b1"), group_id="group-b")
+            assert await conversations.receive_message(other) == "最终回复"
+            other_input = json.dumps(peer.submitted[-1], ensure_ascii=False)
+            assert "quoted-event" not in other_input and "本群当前消息" not in other_input
+            assert peer.created[-1]["cwd"] != peer.created[0]["cwd"]
         finally:
             await model.close()
             await reader.close()
@@ -241,16 +300,32 @@ def test_cancelling_agent_stops_and_deletes_its_exclusive_session(tmp_path, monk
         )
         reader = ImageReader()
         store = RunStore(settings.state_path, bot_id="bot")
-        model = DimReplyModel(settings, store, reader, AccessPolicy())
+        access = AccessPolicy(allowed_groups=frozenset({"group-a", "group-b"}))
+        model = DimReplyModel(settings, store, reader, access)
         context = ToolContext("group-a", "member", "cancel")
         try:
             task = asyncio.create_task(model.reply([], addressed=True, context=context))
             await peer.started.wait()
+            queued = asyncio.create_task(
+                model.reply([], addressed=True, context=ToolContext("group-b", "member", "queued"))
+            )
+            await asyncio.sleep(0)
+            access.allowed_groups = frozenset({"group-a"})
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert peer.stopped == ["1"] and peer.deleted == ["1"]
+            assert await queued is None and len(peer.created) == 1
             assert await model.reply([], addressed=True, context=context) is None
+            peer.started.clear()
+            running = asyncio.create_task(
+                model.reply([], addressed=True, context=ToolContext("group-a", "member", "revoked"))
+            )
+            await peer.started.wait()
+            access.allowed_groups = frozenset({"different-group"})
+            with pytest.raises(ModelError, match="dim_group_revoked"):
+                await running
+            assert peer.stopped == ["1", "2"] and peer.deleted == ["1", "2"]
         finally:
             await model.close()
             await reader.close()
