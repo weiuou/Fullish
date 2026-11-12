@@ -107,7 +107,9 @@ jobs:
           docker build -f deploy/Dockerfile.sandbox -t fullish-sandbox:ci .
           python3 scripts/sandbox-smoke.py --worker-image fullish-sandbox:ci
       - name: Build the optional visualization worker
-        run: docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sandbox:visualization-ci .
+        run: |
+          docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sandbox:visualization-ci .
+          docker build -f deploy/Dockerfile.agent -t fullish-agent:integration-ci .
       - name: Install rootless sandbox test prerequisites
         run: |
           sudo apt-get update
@@ -139,7 +141,7 @@ jobs:
           command -v dockerd-rootless-setuptool.sh
           command -v rootlesskit
       - name: Verify real rootless gVisor, host limits and deployment socket
-        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci fullish-sandbox:visualization-ci
+        run: sudo env FULLISH_SANDBOX_CI=1 python3 tests/sandbox_integration.py fullish:ci fullish-sandbox:visualization-ci fullish-agent:integration-ci
       - name: Export the verified image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker save --output fullish-image.tar fullish:ci

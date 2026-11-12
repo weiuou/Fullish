@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -39,6 +40,26 @@ def run(*args: str, **kwargs) -> str:
                 check=False,
                 timeout=10,
             )
+            # Fresh disposable CI host only: fixed commands with synthetic about:blank,
+            # never an arbitrary source or token. Keep raw native startup errors that the
+            # production broker correctly sanitizes, without changing any runtime limits.
+            try:
+                subprocess.run(
+                    docker
+                    + [
+                        "exec",
+                        "--env",
+                        "HOME=/workspace",
+                        identifier,
+                        "/bin/sh",
+                        "-c",
+                        "node --version; chromium --headless --disable-gpu --dump-dom about:blank",
+                    ],
+                    check=False,
+                    timeout=15,
+                )
+            except subprocess.TimeoutExpired:
+                print("Synthetic browser diagnostic timed out", flush=True)
         raise subprocess.CalledProcessError(result.returncode, args)
     return result.stdout.strip()
 
@@ -71,7 +92,7 @@ def main() -> None:
     ]
     # Load the exact worker image already verified in this job. The dedicated
     # user needs neither access to the runner's checkout nor another image pull.
-    worker_images = ["fullish-sandbox:ci", *sys.argv[2:]]
+    worker_images = ["fullish-sandbox:ci", *sys.argv[2:3]]
     for worker_image in worker_images:
         with subprocess.Popen(["docker", "save", worker_image], stdout=subprocess.PIPE) as saved:
             assert saved.stdout is not None
@@ -179,6 +200,67 @@ def main() -> None:
             ),
             flush=True,
         )
+        if len(sys.argv) > 3:
+            with tempfile.TemporaryDirectory(prefix="fullish-dim-integration-") as temporary:
+                staging = Path(temporary)
+                fixture = run("docker", "create", sys.argv[3])
+                try:
+                    for source, target in (
+                        ("/opt/fullish-agent/node_modules", "modules"),
+                        ("/opt/fullish-plugin", "plugin"),
+                        ("/usr/local/bin/node", "node"),
+                    ):
+                        run("docker", "cp", f"{fixture}:{source}", str(staging / target))
+                    mounts = []
+                    for source, target in (
+                        (str(root), "/workspace"),
+                        (str(staging / "modules"), "/opt/fullish-agent/node_modules"),
+                        (str(staging / "plugin"), "/opt/fullish-plugin"),
+                        (str(staging / "node"), "/usr/local/bin/node"),
+                        ("/run/fullish-sandbox", "/run/fullish-sandbox"),
+                        ("/var/lib/fullish-control", "/var/lib/fullish/control"),
+                    ):
+                        mounts.extend(
+                            ["--mount", f"type=bind,source={source},target={target},readonly"]
+                        )
+                    print(
+                        run(
+                            "docker",
+                            "run",
+                            "--rm",
+                            "--network",
+                            "host",
+                            "--read-only",
+                            "--tmpfs",
+                            "/tmp:rw,noexec,nosuid,size=64m",
+                            "--cap-drop",
+                            "ALL",
+                            "--security-opt",
+                            "no-new-privileges:true",
+                            "--pids-limit",
+                            "128",
+                            "--memory",
+                            "512m",
+                            "--env-file",
+                            "/opt/fullish/runtime.env",
+                            "--env",
+                            "GROUP_CONTROL_DIR=/var/lib/fullish/control",
+                            *mounts,
+                            "--entrypoint",
+                            "python",
+                            image,
+                            "/workspace/scripts/probe_dim_plugin.py",
+                            "--executable",
+                            "/opt/fullish-agent/node_modules/dimcode-linux-x64/bin/dimcode",
+                            "--plugin",
+                            "/opt/fullish-plugin",
+                            "--sandbox-group",
+                            group,
+                        ),
+                        flush=True,
+                    )
+                finally:
+                    run("docker", "rm", fixture)
 
 
 if __name__ == "__main__":

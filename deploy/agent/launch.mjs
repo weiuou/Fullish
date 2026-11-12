@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
+import { connectControl, stopExpiredSessions } from './control.mjs';
 
 const require = createRequire(import.meta.url);
 const packagePath = require.resolve('dimcode-alpha/package.json');
@@ -87,4 +88,33 @@ if (process.argv[2] === '--check') {
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
   child.on('error', () => { process.exitCode = 1; });
   child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
+  let stopping = false;
+  child.once('exit', () => { stopping = true; });
+  const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+  // The controller can disappear while the daemon remains healthy. Independently stop
+  // orphan/expired sessions; an unresponsive control plane terminates this dedicated daemon.
+  (async () => {
+    let control;
+    const readyBy = Date.now() + 20_000;
+    try {
+      while (!stopping && !control) {
+        try { control = await connectControl(endpoint); }
+        catch {
+          if (Date.now() >= readyBy) throw Error('agent_watchdog_start_timeout');
+          await pause(200);
+        }
+      }
+      while (!stopping) {
+        await stopExpiredSessions(control.call);
+        await pause(500);
+      }
+    } catch {
+      if (!stopping) {
+        process.stderr.write('agent_watchdog_failed\n');
+        child.kill('SIGTERM');
+        const kill = setTimeout(() => { if (!stopping) child.kill('SIGKILL'); }, 5000);
+        child.once('exit', () => clearTimeout(kill));
+      }
+    } finally { control?.close(); }
+  })().catch(() => { process.exitCode = 1; });
 }

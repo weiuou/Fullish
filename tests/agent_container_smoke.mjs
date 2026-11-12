@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { connectControl, stopExpiredSessions } from '../deploy/agent/control.mjs';
 
 assert.equal(process.platform, 'linux');
 const root = await mkdtemp(resolve(tmpdir(), 'fullish-dim-container-'));
@@ -18,6 +19,7 @@ const binary = resolve(dirname(nativePackage), 'bin/dimcode');
 const token = 'synthetic-container-bridge-token-123456789';
 let candidate, sessionId, modelRequests = 0, daemon, connection;
 let forbidden = false, forbiddenRequests = 0;
+let hold = false, heldRequests = 0;
 const pending = new Map();
 let sequence = 0, buffer = '';
 const bridge = createServer(async (req, res) => {
@@ -35,6 +37,7 @@ const model = createServer(async (req, res) => {
   let body = '';
   for await (const chunk of req) body += chunk;
   const request = JSON.parse(body);
+  if (hold) { heldRequests++; return; }
   modelRequests++;
   assert.deepEqual((request.tools || []).map(tool => tool.function.name), forbidden ? [] : ['fullish_reply']);
   if (forbidden) forbiddenRequests++;
@@ -141,8 +144,28 @@ try {
   await assert.rejects(access(resolve(root, 'forbidden')), { code: 'ENOENT' });
   await call('session.close', { sessionId });
   assert.equal((await call('session.delete', { sessionId, requireInactive: true })).deleted, true);
+  hold = true;
+  const observer = await connectControl(endpoint);
+  try {
+    for (const detached of [false, true]) {
+      sessionId = (await call('session.create', { cwd: root, tools: [], interactive: false,
+        permissionPolicy: { preset: 'read-only', allowedTools: [] } })).sessionId;
+      await call('session.attach', { sessionId });
+      await call('session.submit', { sessionId, branchId: 'main', submissionId: randomUUID(), text: 'Synthetic hanging model.' });
+      const expected = detached ? 2 : 1;
+      for (let i = 0; i < 100 && heldRequests < expected; i++) await pause(50);
+      assert.equal(heldRequests, expected, 'real provider request started');
+      if (detached) await call('session.detach', { sessionId });
+      assert.equal(await stopExpiredSessions(observer.call, Date.now() + (detached ? 3000 : 91_000)), 1);
+      const catalog = await observer.call('session.catalog', { limit: 128, withPreview: false });
+      assert.equal(catalog.sessions.find(session => session.sessionId === sessionId).running, false);
+      await call('session.close', { sessionId });
+      assert.equal((await call('session.delete', { sessionId, requireInactive: true })).deleted, true);
+    }
+  } finally { observer.close(); }
   console.log(JSON.stringify({ linux_runtime: true, private_unix: true, native_plugin: true,
-    candidate_bridge: true, hidden_exec_refused: true, model_requests: modelRequests, version: hello.serverVersion }));
+    candidate_bridge: true, hidden_exec_refused: true, orphan_and_expired_stopped: true,
+    model_requests: modelRequests, version: hello.serverVersion }));
   await call('daemon.shutdown', {});
 } finally {
   connection?.destroy();
@@ -152,6 +175,7 @@ try {
     await Promise.race([new Promise(resolve => daemon.once('exit', resolve)), pause(5000)]);
     if (daemon.exitCode === null) daemon.kill('SIGKILL');
   }
+  model.closeAllConnections();
   await new Promise(resolve => model.close(resolve));
   await new Promise(resolve => bridge.close(resolve));
   assert.ok(root.startsWith(resolve(tmpdir(), 'fullish-dim-container-')));

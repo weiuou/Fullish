@@ -28,3 +28,4 @@ src/**/*.pyc
 !deploy/agent/package.json
 !deploy/agent/package-lock.json
 !deploy/agent/launch.mjs
+!deploy/agent/control.mjs

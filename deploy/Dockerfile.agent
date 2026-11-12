@@ -13,6 +13,7 @@ COPY plugins/visualize/index.ts plugins/visualize/dim-plugin.json plugins/visual
 COPY plugins/visualize/guides ./guides
 COPY plugins/visualize/skills ./skills
 COPY deploy/agent/launch.mjs /opt/fullish-agent/launch.mjs
+COPY deploy/agent/control.mjs /opt/fullish-agent/control.mjs
 RUN groupadd --gid 10001 fullish-agent && useradd --uid 10001 --gid 10001 --no-create-home fullish-agent \
     && mkdir -p /var/lib/fullish-agent /var/lib/fullish-agent-work /run/fullish-agent \
     && chown 10001:10001 /var/lib/fullish-agent /var/lib/fullish-agent-work /run/fullish-agent \

@@ -9,6 +9,7 @@ import re
 import secrets
 import shlex
 import socket
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -17,7 +18,7 @@ import uvicorn
 from probe_dim import FIXTURE_TEXT, ModelFixture, probe
 
 from fullish.agents.backend import DimReplyModel
-from fullish.agents.bridge import AgentBridge, bridge_app
+from fullish.agents.bridge import AgentBridge, BridgeServer, bridge_app
 from fullish.agents.settings import AgentSettings
 from fullish.agents.store import RunStore
 from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
@@ -48,24 +49,46 @@ async def exercise_plugin(
     access = AccessPolicy(policies=GroupPolicies.from_env() if sandbox_group else None)
     bridge = AgentBridge(access, None)
     token = secrets.token_urlsafe(32)
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    port = listener.getsockname()[1]
-    listener.listen()
-    server = uvicorn.Server(
-        uvicorn.Config(
-            bridge_app(bridge, token),
-            access_log=False,
-            log_level="warning",
-            lifespan="off",
+    private_server = None
+    private_directory = None
+    listener = None
+    server = None
+    serving = None
+    if sandbox_group:
+        private_directory = tempfile.TemporaryDirectory(prefix="fullish-bridge-probe-")
+        private_root = Path(private_directory.name)
+        token_file = private_root / "token"
+        token_file.write_text(token)
+        token_file.chmod(0o600)
+        private_server = BridgeServer(bridge, private_root / "bridge.sock", token_file)
+        await private_server.start()
+        bridge_env = {
+            "FULLISH_AGENT_BRIDGE_SOCKET": str(private_root / "bridge.sock"),
+            "FULLISH_AGENT_BRIDGE_TOKEN": token,
+        }
+    else:
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen()
+        server = uvicorn.Server(
+            uvicorn.Config(
+                bridge_app(bridge, token),
+                access_log=False,
+                log_level="warning",
+                lifespan="off",
+            )
         )
-    )
-    serving = asyncio.create_task(server.serve(sockets=[listener]))
-    while not server.started:
-        if serving.done():
-            await serving
-            raise RuntimeError("Local bridge failed to start")
-        await asyncio.sleep(0.05)
+        serving = asyncio.create_task(server.serve(sockets=[listener]))
+        while not server.started:
+            if serving.done():
+                await serving
+                raise RuntimeError("Local bridge failed to start")
+            await asyncio.sleep(0.05)
+        bridge_env = {
+            "FULLISH_AGENT_BRIDGE_URL": f"http://127.0.0.1:{port}/",
+            "FULLISH_AGENT_BRIDGE_TOKEN": token,
+        }
 
     async def run(endpoint: str, workspace: Path) -> dict:
         rendered: list[bytes] = []
@@ -307,6 +330,7 @@ async def exercise_plugin(
                 "local_browser_renders": len(rendered),
                 "model_png_inputs": len(seen_pixels),
                 "sandbox_boundary": "real_broker" if sandbox_group else "simulated",
+                "bridge_transport": "private_unix" if sandbox_group else "loopback_fixture",
                 "gvisor_verified": False,
                 "qq_boundary": "simulated",
                 "confirmed_delivery_and_history": True,
@@ -321,19 +345,22 @@ async def exercise_plugin(
         return await probe(
             executable,
             plugin=plugin,
-            extra_env={
-                "FULLISH_AGENT_BRIDGE_URL": f"http://127.0.0.1:{port}/",
-                "FULLISH_AGENT_BRIDGE_TOKEN": token,
-            },
+            extra_env=bridge_env,
             exercise=run,
         )
     finally:
         ModelFixture.respond = staticmethod(
             lambda _: {"role": "assistant", "content": FIXTURE_TEXT}
         )
-        server.should_exit = True
-        await serving
-        listener.close()
+        if private_server:
+            await private_server.close()
+        if private_directory:
+            private_directory.cleanup()
+        if server and serving:
+            server.should_exit = True
+            await serving
+        if listener:
+            listener.close()
 
 
 def main() -> None:
