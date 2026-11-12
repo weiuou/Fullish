@@ -114,5 +114,7 @@ for role in roles:
 deadline = time.monotonic() + 24
 while any(role.poll() is None for role in roles) and time.monotonic() < deadline:
     time.sleep(0.1)
+if any(role.poll() is None for role in roles):
+    result = 1
 # Container init tears down the namespace if a role cannot confirm stopping.
 raise SystemExit(result)
