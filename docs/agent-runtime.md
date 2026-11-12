@@ -1,6 +1,6 @@
 # Dim 与 visualize 接入及验证
 
-状态：直接渲染实现进入发布验证，尚未切换生产。日期：2026-11-12。接口与迁移设计见 [Issue #48](https://github.com/weiuou/Fullish/issues/48)，排版回归见 [Issue #46](https://github.com/weiuou/Fullish/issues/46)，后续范围见 [开发路径](agent-runtime-plan.md)。旧版沙箱渲染曾完成单群试运行，其结果仅作为[历史证据](archive/2026-11-12-agent-sandbox-runtime.md)。
+状态：直接渲染已合并部署，继续显式单群试运行。日期：2026-11-12。接口与迁移设计见 [Issue #48](https://github.com/weiuou/Fullish/issues/48)，排版回归见 [Issue #46](https://github.com/weiuou/Fullish/issues/46)，后续范围见 [开发路径](agent-runtime-plan.md)。旧版沙箱渲染曾完成单群试运行，其结果仅作为[历史证据](archive/2026-11-12-agent-sandbox-runtime.md)。
 
 ## 已实现的接入结构
 
@@ -23,10 +23,22 @@ Fullish 为 `DIM_ALLOWED_GROUPS` 中的具体群选择 Dim 回复后端，每条
 | 原生协议与插件 | 真实 Windows alpha.20、受保护 named pipe、rutis 原生工具与 `visualize.probe` 已通过 |
 | 直接浏览器 | 真实 Chromium 生成三种中文 PNG，拒绝远程/文件子资源与溢出；取消后目录回收且可继续绘图 |
 | 完整内部链路 | 真实 Dim、插件、浏览器、Fullish 授权/媒体/投递服务；两次真实 PNG 到达模型请求，最终图片字节一致，模拟 QQ 确认后只记一条回复 |
-| Linux 镜像与发布门禁 | CI 验证真实 companion、私有 Unix RPC、1 GiB/256 PIDs 与无 broker 的完整流程；以候选提交对应 CI 结果为准 |
-| 实际模型与 QQ | 新直接渲染版尚待受控上线验收；旧沙箱版本的成功不代表新版本通过 |
+| Linux 镜像与发布门禁 | [CI 已通过](https://github.com/weiuou/Fullish/actions/runs/43236958746)：真实 companion、私有 Unix RPC、1 GiB/256 PIDs、无 broker 完整流程与发布前后探针 |
+| 实际模型与 QQ | 直接渲染版已完成一次真实受控验收，QQ 图文确认；旧沙箱记录仍单独归档 |
 
 模型与 QQ fixture 属于外部模拟边界，不证明生产模型、真实 QQ 或长期稳定性。旧版验收与固定二进制摘要保存在上述历史记录。
+
+## 2026-11-12 直接渲染上线记录
+
+[PR #47](https://github.com/weiuou/Fullish/pull/47) 合并为 `d8be3cf90389b3fcb1ea5bc67b00431ce08c4774`，经[主分支发布流程](https://github.com/weiuou/Fullish/actions/runs/43238245364)部署。仅保留一个既有试运行群，未扩大群授权；生产健康检查确认 Dim 后端、直接绘图和 QQ 连接就绪，companion 未挂载 broker 或 Docker socket。
+
+受控验收使用真实 `gpt-6-luna`、Dim、rutis 与 Chromium，通过 Fullish 内部对话和公共发送服务生成中文流程图，查看并修改一次，再取得真实 QQ 图文确认。共 5 次模型请求、2 次插件绘图，至确认约 33.4 秒；确认后只写一条回复历史。PNG 为 1000 × 600、15662 字节，SHA-256 为 `f0d5af5ab96daf14bf82202edf81aac7d73bcab4f1479e244e164f07c1c2eb93`。输入为明确标记的部署验收内容，没有伪造 QQ 入站事件；正常群聊、长期质量、耗时和容量继续观察。
+
+首次验收脚本漏传群策略目录，虽已得到 PNG，但公共发送权限检查在 QQ 发送前将其拦截，未发送也未记回复。修正验收环境并显式读取现有群策略后，使用独立验收任务完成上述确认；没有修改群权限或重投不明消息。
+
+![Dim 插件直接绘图的真实 QQ 验收产物](assets/visualize-direct-live.png)
+
+bot 镜像为 `ghcr.io/weiuou/fullish@sha256:07e10a3858c55cb3f51319f5bd62da48b1b7764c575ae0f8338f179d518c11f8`，专用 companion 为 `fullish.local/agent@sha256:930049ffb69624b897d8da140ec51b2ec5f374fdae2ee5ee0dd90e00046a4b03`。后者从固定源码在服务器构建并以不可变摘要使用，`fullish.local` 不能从外部仓库拉取，维护者须保留镜像与私有 rollout 备份，或先发布到可用仓库。运行配置为 `DIM_VISUALIZATION=true`，旧 `SANDBOX_VISUALIZATION=false`，避免旧 bot 回退后重新启用旧绘图路径。
 
 ## 本地开发与探针
 
