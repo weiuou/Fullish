@@ -12,6 +12,7 @@ import socket
 import tempfile
 from pathlib import Path
 from typing import Literal
+from unittest.mock import patch
 
 import httpx
 import uvicorn
@@ -19,6 +20,7 @@ from probe_dim import FIXTURE_TEXT, ModelFixture, probe
 
 from fullish.agents.backend import DimReplyModel
 from fullish.agents.bridge import AgentBridge, BridgeServer, bridge_app
+from fullish.agents.check import check as deployment_check
 from fullish.agents.settings import AgentSettings
 from fullish.agents.store import RunStore
 from fullish.collection import CollectedMessage, MessagePart, ParsedContent, Sender
@@ -51,6 +53,7 @@ async def exercise_plugin(
     token = secrets.token_urlsafe(32)
     private_server = None
     private_directory = None
+    private_root = None
     listener = None
     server = None
     serving = None
@@ -280,7 +283,25 @@ async def exercise_plugin(
             runs=model.store,
         )
         qq = QQFixture()
+        deployment_env = {}
+        if sandbox_group:
+            assert private_root is not None
+            deployment_env = {
+                "AGENT_BACKEND": "dim",
+                "DIM_ENDPOINT": endpoint,
+                "DIM_WORKSPACE_ROOT": str(workspace),
+                "DIM_ALLOWED_GROUPS": group,
+                "SANDBOX_VISUALIZATION": "true",
+                "DIM_BRIDGE_SOCKET": str(private_root / "bridge.sock"),
+                "DIM_BRIDGE_TOKEN_FILE": str(private_root / "token"),
+            }
         try:
+            if sandbox_group:
+                before = len(ModelFixture.requests)
+                with patch.dict(os.environ, deployment_env):
+                    await deployment_check(preflight=True)
+                if len(ModelFixture.requests) != before:
+                    raise RuntimeError("Deployment preflight unexpectedly called the model")
             await handler.handle(
                 CollectedMessage(
                     group,
@@ -313,6 +334,12 @@ async def exercise_plugin(
                 raise RuntimeError("The candidate did not reach confirmed Fullish delivery")
             if len(conversations.store.groups[group].turns) != 2:
                 raise RuntimeError("Confirmed delivery did not update group history exactly once")
+            if sandbox_group:
+                before = len(ModelFixture.requests)
+                with patch.dict(os.environ, deployment_env):
+                    await deployment_check()
+                if len(ModelFixture.requests) != before or qq.acknowledged != 1:
+                    raise RuntimeError("Deployment postflight called the model or sent QQ")
             requests = [request for request in ModelFixture.requests if request.get("tools")]
             if not requests or any(
                 {tool["function"]["name"] for tool in request["tools"]}
@@ -334,6 +361,7 @@ async def exercise_plugin(
                 "model_png_inputs": len(seen_pixels),
                 "sandbox_boundary": "real_broker" if sandbox_group else "simulated",
                 "bridge_transport": "private_unix" if sandbox_group else "loopback_fixture",
+                "deployment_pre_and_postflight": bool(sandbox_group),
                 "gvisor_verified": False,
                 "qq_boundary": "simulated",
                 "confirmed_delivery_and_history": True,
@@ -381,6 +409,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.browser and args.sandbox_group:
         parser.error("Choose --browser or --sandbox-group")
+    if args.sandbox_group and os.name == "nt":
+        parser.error("--sandbox-group requires the private Linux broker and Unix bridge")
     result = asyncio.run(
         exercise_plugin(
             args.executable.resolve(),
