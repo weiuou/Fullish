@@ -43,6 +43,7 @@ def main() -> int:
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
     }
     unit = f"fullish-sandbox-runtime-{identifier}.service"
+    allowed_limits = {(512 * 1024 * 1024, 64), (1024 * 1024 * 1024, 128)}
     if operation == "create":
         bundle = next(
             (arg.split("=", 1)[1] for arg in arguments if arg.startswith("--bundle=")),
@@ -60,8 +61,10 @@ def main() -> int:
         ]
         if not profiles or profiles == ["standard"]:
             memory, pids = "512M", 64
+            allowed_limits = {(512 * 1024 * 1024, 64)}
         elif profiles == ["visualization"]:
             memory, pids = "1G", 128
+            allowed_limits = {(1024 * 1024 * 1024, 128)}
         else:
             raise ValueError("unknown_image_resource_profile")
         subprocess.run(
@@ -97,7 +100,7 @@ def main() -> int:
                 int((directory / "memory.max").read_text()),
                 int((directory / "pids.max").read_text()),
             )
-            in {(512 * 1024 * 1024, 64), (1024 * 1024 * 1024, 128)}
+            in allowed_limits
             and int((directory / "memory.swap.max").read_text()) == 0
         ):
             raise ValueError("runtime_limits_not_enforced")

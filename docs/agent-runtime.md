@@ -23,10 +23,10 @@ Fullish 的任务时限为 90 秒，桥接最多 12 次调用、2 次渲染。�
 | 完整渲染与修正 | 已通过本地探针 | 真实 Dim/插件/浏览器，两次渲染；真实 PNG 到达模型请求，最终字节回到 Fullish；broker 为外部模拟边界 |
 | 群聊与投递语义 | 已有模拟回放 | 确认后记历史、撤权、重启去重、取消与跨会话产物拒绝 |
 | Linux Dim 容器 | 已通过本地探针与 CI | 真实 alpha.20、私有 Unix RPC、插件、候选登记、隐藏 exec 拒绝；本地还验证超时/断开控制端会话停止；断网、只读根目录、512 MiB/128 PIDs |
-| 渲染容器及 rootless gVisor | 待完成 | 本地浏览器成功不证明生产沙箱可运行；已加入独立 Linux CI 门禁 |
+| 渲染容器及 rootless gVisor | 独立渲染已通过；整链仍待验收 | [真实 rootless 检查](https://github.com/weiuou/Fullish/actions/runs/43198230644/job/131114976857) 验证 1 GiB/128 PIDs、三种中文图、拒绝外部/文件资源和溢出、浏览器清理；后续整链因合成群未授予图片权限失败 |
 | 实际模型质量与 QQ 实群 | 待完成 | 当前模型和 QQ 使用合成外部边界 |
 
-Windows 验收二进制源码为 `d3910d14999119c37d61d5d52139dfa29b81eab3`，SHA-256 为 `d5bda3496bd6782f574ae7446158c16731829d32e8bfb63fab150f48ea544d25`。其他平台须分别记录实际二进制摘要，不能沿用该值。
+验收版本源码为 `d3910d14999119c37d61d5d52139dfa29b81eab3`。Windows x64 二进制 SHA-256 为 `d5bda3496bd6782f574ae7446158c16731829d32e8bfb63fab150f48ea544d25`；Linux x64 为 `93da59c424cdc421a9079d38478c817e6226376eabdea23418140c3cbe042c3c`，见 [Linux 原生 runtime 与启动器验收](https://github.com/weiuou/Fullish/actions/runs/43198230644/job/131114976890)。摘要按平台分别记录，不能跨平台沿用。
 
 ## 本地开发与探针
 
@@ -62,7 +62,7 @@ docker build --target visualization -f deploy/Dockerfile.sandbox -t fullish-sand
 
 普通沙箱仍是默认构建目标。渲染镜像预装 Node、Chromium、中文字体、Mermaid 和 Playwright，运行时断网；源文件与输出有大小、像素、路径及时间限制。HTML/SVG 的页面脚本关闭，Mermaid 使用受限 DSL 和严格模式，远程与文件子资源被拒绝。
 
-渲染镜像声明独立的资源配置：1 核、1 GiB 内存、128 PIDs、无 swap；普通镜像仍为 512 MiB/64 PIDs。Chromium 保留正常进程模型与内层沙箱，Linux CLI 只接受 Fullish worker 的 PID 命名空间。broker 从维护者指定的固定镜像读取配置，同时检查 Docker 和真实宿主机 cgroup；群消息不能扩大限制。该配置尚待本轮真实 gVisor 验收，不将本地浏览器成功当作部署通过。
+渲染镜像声明独立的资源配置：1 核、1 GiB 内存、128 PIDs、无 swap；普通镜像仍为 512 MiB/64 PIDs。Chromium 保留正常进程模型与内层沙箱，Linux CLI 只接受 Fullish worker 的 PID 命名空间。broker 从维护者指定的固定镜像读取配置，同时检查 Docker 和真实宿主机 cgroup；群消息不能扩大限制。该配置已通过独立的真实 gVisor 渲染检查，完整 agent/部署链仍须单独验收。
 
 切换渲染镜像前，先安装本分支的 `scripts/sandbox-runtime-setup.sh` 所用 OCI 适配器与 `scripts/sandbox-setup.sh` 所用 broker，再按原流程安装新的沙箱镜像 digest。旧适配器不能承载新增配置；应保持部署门禁失败并继续原 sender，不临时放开限制。部署前测量 bot、CPA、Dim 与最多两组沙箱的共同峰值，单个渲染任务仍按 90 秒交互预算运行。
 
@@ -88,7 +88,7 @@ Dim 的 home 会持久化 Timeline；任务结束会请求关闭并删除对应 
 
 ## 停用与恢复边界
 
-先停止接收新 Dim 任务，等待在途完成或撤销授权并确认停止，再将 `AGENT_BACKEND=legacy`。保持 Dim endpoint/运行登记配置时，新路由仍抑制已占用事件，避免切换后端重跑。结果不明的运行只查询和人工核对，不自动提交或补发。
+先停止接收新 Dim 任务，等待在途完成或撤销授权并确认停止，再将 `AGENT_BACKEND=legacy`。保持 Dim endpoint/运行登记配置时，新路由仍抑制已占用事件，避免切换后端重跑。结果不明的运行只查询和人工核对，不自动提交或补发。取消已尝试绘图的任务时，原生停止确认不能证明 broker 的外部操作也已结束，运行登记保留为不明。
 
 回滚到不认识新运行登记的旧二进制前，先排空并核对未决任务；旧版本没有新增的跨重启去重保证。删除 Compose 覆盖文件之前同步撤销 bot 的 agent 配置，保留私有 home 和登记用于核对。不要把删除持久卷作为普通回退步骤。
 

@@ -85,10 +85,13 @@ if (process.argv[2] === '--check') {
     FULLISH_AGENT_MODEL_KEY: modelKey, FULLISH_AGENT_BRIDGE_TOKEN: bridgeToken,
     FULLISH_AGENT_BRIDGE_SOCKET: '/run/fullish-agent/bridge.sock',
   } });
-  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
+  let stopping = false;
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+    stopping = true;
+    child.kill(signal);
+  });
   child.on('error', () => { process.exitCode = 1; });
   child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
-  let stopping = false;
   child.once('exit', () => { stopping = true; });
   const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   // The controller can disappear while the daemon remains healthy. Independently stop

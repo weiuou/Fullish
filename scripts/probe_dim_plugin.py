@@ -178,6 +178,9 @@ async def exercise_plugin(
             bridge.tools = tools
             bridge.enabled = True
 
+        if rendering and len(bridge.tool_names(ToolContext(group, "fixture-member", "one"))) != 3:
+            raise RuntimeError("Test group requires explicit chat, sandbox and image grants")
+
         seen_pixels: list[bytes] = []
 
         def respond(request: dict) -> dict:

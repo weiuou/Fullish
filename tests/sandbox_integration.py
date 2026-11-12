@@ -214,6 +214,28 @@ def main() -> None:
             flush=True,
         )
         if len(sys.argv) > 3:
+            # This fresh CI host grants image delivery only to its synthetic group. The
+            # probe itself must not grant permissions or bypass a disabled feature.
+            run(
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--user",
+                "0",
+                "--mount",
+                "type=bind,source=/var/lib/fullish-control,target=/control",
+                "--entrypoint",
+                "python",
+                image,
+                "-c",
+                "import os,sys; from pathlib import Path; "
+                "from fullish.policies.groups import GroupPolicies; "
+                "p=Path('/control/policy.json'); "
+                "GroupPolicies(p).change(sys.argv[1], 'image', True); os.chown(p,10001,10001)",
+                group,
+            )
             with tempfile.TemporaryDirectory(prefix="fullish-dim-integration-") as temporary:
                 staging = Path(temporary)
                 fixture = run("docker", "create", sys.argv[3])

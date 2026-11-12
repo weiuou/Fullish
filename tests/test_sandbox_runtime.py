@@ -17,7 +17,18 @@ class Executed(BaseException):
 
 @pytest.mark.parametrize(
     "change",
-    ["valid", "visualization", "unknown_profile", "memory", "swap", "cpu", "pids", "root", "bot"],
+    [
+        "valid",
+        "visualization",
+        "profile_mismatch",
+        "unknown_profile",
+        "memory",
+        "swap",
+        "cpu",
+        "pids",
+        "root",
+        "bot",
+    ],
 )
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux cgroup paths and UID mapping")
 def test_adapter_requires_host_limits_before_starting_runsc(tmp_path, change):
@@ -41,7 +52,7 @@ def test_adapter_requires_host_limits_before_starting_runsc(tmp_path, change):
         limits.update({"memory.max": "1073741824", "pids.max": "128"})
     profile = (
         ["FULLISH_SANDBOX_PROFILE=visualization"]
-        if change == "visualization"
+        if change in {"visualization", "profile_mismatch"}
         else ["FULLISH_SANDBOX_PROFILE=unbounded"]
         if change == "unknown_profile"
         else []

@@ -166,7 +166,7 @@ try {
   console.log(JSON.stringify({ linux_runtime: true, private_unix: true, native_plugin: true,
     candidate_bridge: true, hidden_exec_refused: true, orphan_and_expired_stopped: true,
     binary_sha256: createHash('sha256').update(await readFile(binary)).digest('hex'),
-    model_requests: modelRequests, version: hello.serverVersion }));
+    model_requests: modelRequests + heldRequests, version: hello.serverVersion }));
   await call('daemon.shutdown', {});
 } finally {
   connection?.destroy();

@@ -224,7 +224,12 @@ class DimReplyModel:
                                     },
                                     timeout=5,
                                 )
-                                self.store.update(run.run_id, state="cancelled")
+                                # Native idle does not attest settlement of a render already
+                                # accepted by the external broker. Keep that uncertainty durable.
+                                self.store.update(
+                                    run.run_id,
+                                    state="unknown" if lease and lease.renders else "cancelled",
+                                )
                             await rpc.call("session.close", {"sessionId": session_id}, timeout=5)
                             deleted = await rpc.call(
                                 "session.delete",
